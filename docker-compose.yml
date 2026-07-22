@@ -1,0 +1,46 @@
+services:
+  delivery-service:
+    build: .
+    container_name: delivery-service
+    restart: unless-stopped
+    ports:
+      - "8084:8084"
+    env_file:
+      - .env
+    environment:
+      # Inside the compose network the DB host is the service name below.
+      MONGODB_URI: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@delivery-db:27017/delivery_db?authSource=admin
+      ORDER_SERVICE_URL: http://order-service:8082
+    depends_on:
+      delivery-db:
+        condition: service_healthy
+    networks:
+      - microservices-net
+
+  delivery-db:
+    image: mongo:7
+    container_name: delivery-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+    ports:
+      - "27017:27017"
+    volumes:
+      - delivery_data:/data/db
+    networks:
+      - microservices-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+# Shared external network so services can reach each other:
+#   docker network create microservices-net   (once)
+networks:
+  microservices-net:
+    external: true
+
+volumes:
+  delivery_data:
