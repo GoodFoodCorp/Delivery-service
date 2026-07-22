@@ -105,6 +105,29 @@ socket.on('position:broadcast', (pos) => { /* { lat, lng, timestamp, status } */
 
 ---
 
+## Dépendances
+
+> **Légende** — 🔴 indispensable (le service ne démarre pas ou ne sert à rien) ·
+> 🟠 nécessaire à une fonctionnalité (le reste continue de marcher) ·
+> 🟡 optionnelle (dégradation silencieuse, journalisée)
+
+| Dépendance | Type | Conséquence si absente |
+|---|---|---|
+| **MongoDB** (`delivery-db`) | 🔴 | Le service ne démarre pas |
+| **order-service** | 🟠 | La **synchronisation des courses échoue** : aucune nouvelle livraison n'est créée à partir des commandes prêtes (l'erreur est journalisée, la liste des livraisons existantes reste servie). Les changements de statut (`IN_DELIVERY`, `DELIVERED`) ne remontent plus aux commandes — l'échec est journalisé sans casser la livraison. |
+| **auth-service** | 🟠 | Aucun appel réseau, mais toutes les routes et le WebSocket exigent un jeton valide |
+
+### Qui dépend de ce service
+
+| Service | Type | Conséquence si `delivery-service` est arrêté |
+|---|---|---|
+| Future **application mobile livreur** | 🔴 | Inutilisable |
+| `web-app` | 🟢 | Aucun impact aujourd'hui : le front n'expose pas encore d'écran de livraison |
+
+Aucun autre service ne l'appelle.
+
+---
+
 ## Lancement
 
 ```bash
