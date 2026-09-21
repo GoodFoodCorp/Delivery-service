@@ -24,16 +24,16 @@ export class DeliveryController {
 
   @Post(':id/accept')
   @Roles('livreur')
-  @ApiOperation({ summary: 'Courier takes the delivery' })
-  accept(@CurrentActor() actor: Actor, @Param('id') id: string, @Headers('x-request-id') requestId?: string) {
-    return this.deliveries.accept(actor, id, requestId);
+  @ApiOperation({ summary: 'Courier takes the delivery, even while the order is still being prepared' })
+  accept(@CurrentActor() actor: Actor, @Param('id') id: string) {
+    return this.deliveries.accept(actor, id);
   }
 
   @Post(':id/pickup')
   @Roles('livreur')
-  @ApiOperation({ summary: 'Order picked up at the restaurant' })
-  pickup(@CurrentActor() actor: Actor, @Param('id') id: string) {
-    return this.deliveries.pickup(actor, id);
+  @ApiOperation({ summary: 'Order picked up at the restaurant (requires READY_FOR_PICKUP)' })
+  pickup(@CurrentActor() actor: Actor, @Param('id') id: string, @Headers('x-request-id') requestId?: string) {
+    return this.deliveries.pickup(actor, id, requestId);
   }
 
   @Post(':id/dropoff')

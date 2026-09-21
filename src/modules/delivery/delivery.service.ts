@@ -3,7 +3,7 @@ import { Actor } from '../../common/auth.util';
 import { DomainError } from '../../common/errors';
 import { DELIVERY_REPOSITORY, DeliveryRepository } from './delivery.repository';
 import { estimateDeliveryTime, pseudoCoordinates } from './geo';
-import { OrdersClient } from './orders.client';
+import { ORDER_READY_FOR_PICKUP, OrdersClient } from './orders.client';
 import { DeliveryDocument, DeliveryStatus } from './entities/delivery.schema';
 
 const ROLE_COURIER = 'livreur';
@@ -22,8 +22,10 @@ export class DeliveryService {
 
   /**
    * Lists deliveries a courier can accept. First syncs from order-service:
-   * every READY_FOR_PICKUP order without a delivery gets one (UNASSIGNED),
-   * reusing the caller's own token (sync REST, see root README).
+   * every claimable order without a delivery gets one (UNASSIGNED), reusing
+   * the caller's own token (sync REST, see root README). Claimable means
+   * IN_PREPARATION or READY_FOR_PICKUP, so a courier can take an order on
+   * before the kitchen is done with it.
    */
   async listAvailable(actor: Actor, requestId?: string): Promise<DeliveryDocument[]> {
     this.ensureRole(actor, ROLE_COURIER, ROLE_ADMIN);
@@ -54,8 +56,15 @@ export class DeliveryService {
     return this.repo.listByStatus(DeliveryStatus.Unassigned);
   }
 
-  /** Courier takes the delivery (UNASSIGNED → ASSIGNED) and the order goes IN_DELIVERY. */
-  async accept(actor: Actor, deliveryId: string, requestId?: string): Promise<DeliveryDocument> {
+  /**
+   * Courier claims the delivery (UNASSIGNED → ASSIGNED).
+   *
+   * This deliberately leaves the order untouched: a courier can claim an
+   * order that is still IN_PREPARATION and drive to the restaurant while the
+   * kitchen finishes it, so the meal is collected hot. The order advances to
+   * IN_DELIVERY only when it is actually collected — see pickup().
+   */
+  async accept(actor: Actor, deliveryId: string): Promise<DeliveryDocument> {
     this.ensureRole(actor, ROLE_COURIER);
     const delivery = await this.getOrThrow(deliveryId);
     if (delivery.status !== DeliveryStatus.Unassigned) {
@@ -64,20 +73,33 @@ export class DeliveryService {
     delivery.livreurId = actor.userId;
     delivery.status = DeliveryStatus.Assigned;
     delivery.assignedAt = new Date();
-    const saved = await this.repo.save(delivery);
-    await this.orders.updateOrderStatus(delivery.orderId, 'IN_DELIVERY', actor.token, requestId);
-    return saved;
+    return this.repo.save(delivery);
   }
 
-  /** Courier picked the order up at the restaurant (ASSIGNED → PICKED_UP). */
-  async pickup(actor: Actor, deliveryId: string): Promise<DeliveryDocument> {
+  /**
+   * Courier collects the meal (ASSIGNED → PICKED_UP) and the order goes
+   * IN_DELIVERY. This is where the two lifecycles meet, so the kitchen must
+   * have marked the order READY_FOR_PICKUP: a courier who arrived early
+   * waits instead of walking off with a meal that is still cooking.
+   */
+  async pickup(actor: Actor, deliveryId: string, requestId?: string): Promise<DeliveryDocument> {
     const delivery = await this.getOwnDelivery(actor, deliveryId);
     if (delivery.status !== DeliveryStatus.Assigned) {
       throw DomainError.conflict(`cannot pick up a delivery in status ${delivery.status}`);
     }
+
+    // Fails closed on purpose: if order-service cannot confirm the meal is
+    // ready, refuse the pickup rather than start a delivery too early.
+    const order = await this.orders.getOrder(delivery.orderId, actor.token, requestId);
+    if (order.status !== ORDER_READY_FOR_PICKUP) {
+      throw DomainError.conflict(`order is not ready for pickup yet (status ${order.status})`);
+    }
+
     delivery.status = DeliveryStatus.PickedUp;
     delivery.pickedUpAt = new Date();
-    return this.repo.save(delivery);
+    const saved = await this.repo.save(delivery);
+    await this.orders.updateOrderStatus(delivery.orderId, 'IN_DELIVERY', actor.token, requestId);
+    return saved;
   }
 
   /** Courier drops the order off (PICKED_UP/IN_TRANSIT → DELIVERED, timestamped). */

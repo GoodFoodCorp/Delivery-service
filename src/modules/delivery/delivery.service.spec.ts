@@ -58,8 +58,19 @@ class FakeRepo implements DeliveryRepository {
 class FakeOrders {
   ready: ReadyOrder[] = [];
   statusCalls: { orderId: string; status: string }[] = [];
+  /** What the kitchen reports for getOrder — drives the pickup guard. */
+  orderStatus = 'READY_FOR_PICKUP';
   async listReadyForDelivery() {
     return this.ready;
+  }
+  async getOrder(orderId: string): Promise<ReadyOrder> {
+    return {
+      id: orderId,
+      customer_id: 'cust-1',
+      restaurant_id: 'resto-1',
+      delivery_address: '1 rue A',
+      status: this.orderStatus,
+    };
   }
   async updateOrderStatus(orderId: string, status: string) {
     this.statusCalls.push({ orderId, status });
@@ -103,7 +114,7 @@ describe('listAvailable', () => {
   it('creates UNASSIGNED deliveries for new ready orders', async () => {
     const { repo, orders, service } = setup();
     orders.ready = [
-      { id: 'order-9', customer_id: 'cust-9', restaurant_id: 'resto-9', delivery_address: '1 rue A' },
+      { id: 'order-9', customer_id: 'cust-9', restaurant_id: 'resto-9', delivery_address: '1 rue A', status: 'READY_FOR_PICKUP' },
     ];
 
     const list = await service.listAvailable(courier);
@@ -119,10 +130,24 @@ describe('listAvailable', () => {
     const { repo, orders, service } = setup();
     await seedDelivery(repo, { orderId: 'order-9' });
     orders.ready = [
-      { id: 'order-9', customer_id: 'cust-9', restaurant_id: 'resto-9', delivery_address: '1 rue A' },
+      { id: 'order-9', customer_id: 'cust-9', restaurant_id: 'resto-9', delivery_address: '1 rue A', status: 'READY_FOR_PICKUP' },
     ];
 
     await service.listAvailable(courier);
+    expect(repo.docs.size).toBe(1);
+  });
+
+  it('offers orders that are still being prepared, so a courier can travel meanwhile', async () => {
+    const { repo, orders, service } = setup();
+    orders.ready = [
+      { id: 'order-7', customer_id: 'cust-7', restaurant_id: 'resto-7', delivery_address: '7 rue B', status: 'IN_PREPARATION' },
+    ];
+
+    const list = await service.listAvailable(courier);
+
+    expect(list).toHaveLength(1);
+    expect(list[0].orderId).toBe('order-7');
+    expect(list[0].status).toBe(DeliveryStatus.Unassigned);
     expect(repo.docs.size).toBe(1);
   });
 
@@ -135,7 +160,7 @@ describe('listAvailable', () => {
 // ── accept ──────────────────────────────────────────────────
 
 describe('accept', () => {
-  it('assigns the courier and pushes IN_DELIVERY to order-service', async () => {
+  it('assigns the courier without advancing the order', async () => {
     const { repo, orders, service } = setup();
     const doc = await seedDelivery(repo);
 
@@ -144,7 +169,19 @@ describe('accept', () => {
     expect(accepted.status).toBe(DeliveryStatus.Assigned);
     expect(accepted.livreurId).toBe('liv-1');
     expect(accepted.assignedAt).toBeInstanceOf(Date);
-    expect(orders.statusCalls).toEqual([{ orderId: 'order-1', status: 'IN_DELIVERY' }]);
+    // The kitchen still owns the order until the meal is actually collected.
+    expect(orders.statusCalls).toEqual([]);
+  });
+
+  it('can be accepted while the order is still in preparation', async () => {
+    const { repo, orders, service } = setup();
+    orders.orderStatus = 'IN_PREPARATION';
+    const doc = await seedDelivery(repo);
+
+    const accepted = await service.accept(courier, (doc as never as FakeDoc)._id);
+
+    expect(accepted.status).toBe(DeliveryStatus.Assigned);
+    expect(orders.statusCalls).toEqual([]);
   });
 
   it('refuses an already-assigned delivery', async () => {
@@ -176,7 +213,38 @@ describe('pickup and dropoff', () => {
     const dropped = await service.dropoff(courier, id);
     expect(dropped.status).toBe(DeliveryStatus.Delivered);
     expect(dropped.deliveredAt).toBeInstanceOf(Date);
+    // IN_DELIVERY is pushed at pickup, not at accept.
     expect(orders.statusCalls.map((c) => c.status)).toEqual(['IN_DELIVERY', 'DELIVERED']);
+  });
+
+  it('refuses pickup while the meal is still cooking, then allows it once ready', async () => {
+    const { repo, orders, service } = setup();
+    const doc = await seedDelivery(repo);
+    const id = (doc as never as FakeDoc)._id;
+    orders.orderStatus = 'IN_PREPARATION';
+    await service.accept(courier, id);
+
+    // Courier arrived early: they wait rather than leave with a raw meal.
+    await expectDomainError(service.pickup(courier, id), DomainErrorCode.Conflict);
+    expect(orders.statusCalls).toEqual([]);
+
+    orders.orderStatus = 'READY_FOR_PICKUP';
+    const picked = await service.pickup(courier, id);
+    expect(picked.status).toBe(DeliveryStatus.PickedUp);
+    expect(orders.statusCalls).toEqual([{ orderId: 'order-1', status: 'IN_DELIVERY' }]);
+  });
+
+  it('fails closed when order-service cannot confirm the order is ready', async () => {
+    const { repo, orders, service } = setup();
+    const doc = await seedDelivery(repo);
+    const id = (doc as never as FakeDoc)._id;
+    await service.accept(courier, id);
+    orders.getOrder = async () => {
+      throw DomainError.conflict('order-service unreachable');
+    };
+
+    await expectDomainError(service.pickup(courier, id), DomainErrorCode.Conflict);
+    expect(orders.statusCalls).toEqual([]);
   });
 
   it('only the assigned courier can act on the delivery', async () => {
