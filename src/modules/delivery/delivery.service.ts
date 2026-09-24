@@ -145,7 +145,13 @@ export class DeliveryService {
     try {
       delivery = await this.repo.findById(id);
     } catch {
-      throw DomainError.notFound('delivery not found');
+    }
+    if (!delivery) {
+      try {
+        delivery = await this.repo.findByOrderId(id);
+      } catch {
+        throw DomainError.notFound('delivery not found');
+      }
     }
     if (!delivery) {
       throw DomainError.notFound('delivery not found');
