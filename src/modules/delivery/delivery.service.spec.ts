@@ -135,6 +135,17 @@ describe('listAvailable', () => {
 // ── accept ──────────────────────────────────────────────────
 
 describe('accept', () => {
+  it('accepts a delivery using its order id', async () => {
+    const { repo, service } = setup();
+    const doc = await seedDelivery(repo, { orderId: 'order-9' });
+
+    const accepted = await service.accept(courier, 'order-9');
+
+    expect(accepted).toBe(doc);
+    expect(accepted.status).toBe(DeliveryStatus.Assigned);
+    expect(accepted.livreurId).toBe('liv-1');
+  });
+
   it('assigns the courier and pushes IN_DELIVERY to order-service', async () => {
     const { repo, orders, service } = setup();
     const doc = await seedDelivery(repo);
