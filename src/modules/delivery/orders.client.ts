@@ -22,7 +22,7 @@ export class OrdersClient {
   }
 
   async listReadyForDelivery(bearerToken: string, requestId?: string): Promise<ReadyOrder[]> {
-    const res = await fetch(`${this.baseUrl}/api/orders/ready-for-delivery`, {
+    const res = await fetch(`${this.baseUrl}/ready-for-delivery`, {
       headers: this.headers(bearerToken, requestId),
     });
     if (!res.ok) {
@@ -33,9 +33,14 @@ export class OrdersClient {
 
   /** Marks the order IN_DELIVERY / DELIVERED. Failures are logged but do not
    *  break the delivery flow (order status can be reconciled later). */
-  async updateOrderStatus(orderId: string, status: string, bearerToken: string, requestId?: string): Promise<void> {
+  async updateOrderStatus(
+    orderId: string,
+    status: string,
+    bearerToken: string,
+    requestId?: string,
+  ): Promise<void> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/orders/${orderId}/status`, {
+      const res = await fetch(`${this.baseUrl}/${orderId}/status`, {
         method: 'PATCH',
         headers: { ...this.headers(bearerToken, requestId), 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),
