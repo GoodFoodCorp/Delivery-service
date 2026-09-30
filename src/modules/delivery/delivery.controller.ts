@@ -22,6 +22,13 @@ export class DeliveryController {
     return this.deliveries.listAvailable(actor, requestId);
   }
 
+  @Get('mine')
+  @Roles('livreur')
+  @ApiOperation({ summary: 'Active deliveries assigned to the connected courier' })
+  listMine(@CurrentActor() actor: Actor) {
+    return this.deliveries.listMine(actor);
+  }
+
   @Post(':id/accept')
   @Roles('livreur')
   @ApiOperation({ summary: 'Courier takes the delivery' })
@@ -39,7 +46,11 @@ export class DeliveryController {
   @Post(':id/dropoff')
   @Roles('livreur')
   @ApiOperation({ summary: 'Order delivered to the customer (timestamped)' })
-  dropoff(@CurrentActor() actor: Actor, @Param('id') id: string, @Headers('x-request-id') requestId?: string) {
+  dropoff(
+    @CurrentActor() actor: Actor,
+    @Param('id') id: string,
+    @Headers('x-request-id') requestId?: string,
+  ) {
     return this.deliveries.dropoff(actor, id, requestId);
   }
 

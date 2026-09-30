@@ -12,6 +12,7 @@ export interface DeliveryRepository {
   findById(id: string): Promise<DeliveryDocument | null>;
   findByOrderId(orderId: string): Promise<DeliveryDocument | null>;
   listByStatus(status: DeliveryStatus): Promise<DeliveryDocument[]>;
+  listByCourier(courierId: string, statuses: DeliveryStatus[]): Promise<DeliveryDocument[]>;
   create(data: Partial<Delivery>): Promise<DeliveryDocument>;
   save(doc: DeliveryDocument): Promise<DeliveryDocument>;
   addPosition(deliveryId: string, lat: number, lng: number, timestamp: Date): Promise<PositionUpdateDocument>;
@@ -39,6 +40,13 @@ export class MongooseDeliveryRepository implements DeliveryRepository {
     return this.deliveries.find({ status }).sort({ createdAt: 1 }).exec();
   }
 
+  listByCourier(courierId: string, statuses: DeliveryStatus[]): Promise<DeliveryDocument[]> {
+    return this.deliveries
+      .find({ livreurId: courierId, status: { $in: statuses } })
+      .sort({ assignedAt: -1 })
+      .exec();
+  }
+
   create(data: Partial<Delivery>): Promise<DeliveryDocument> {
     return this.deliveries.create(data);
   }
@@ -47,7 +55,12 @@ export class MongooseDeliveryRepository implements DeliveryRepository {
     return doc.save();
   }
 
-  addPosition(deliveryId: string, lat: number, lng: number, timestamp: Date): Promise<PositionUpdateDocument> {
+  addPosition(
+    deliveryId: string,
+    lat: number,
+    lng: number,
+    timestamp: Date,
+  ): Promise<PositionUpdateDocument> {
     return this.positions.create({ deliveryId, lat, lng, timestamp });
   }
 

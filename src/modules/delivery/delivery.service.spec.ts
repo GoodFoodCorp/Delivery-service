@@ -37,6 +37,11 @@ class FakeRepo implements DeliveryRepository {
   async listByStatus(status: DeliveryStatus) {
     return [...this.docs.values()].filter((d) => d.status === status) as unknown as DeliveryDocument[];
   }
+  async listByCourier(courierId: string, statuses: DeliveryStatus[]) {
+    return [...this.docs.values()].filter(
+      (d) => d.livreurId === courierId && statuses.includes(d.status),
+    ) as unknown as DeliveryDocument[];
+  }
   async create(data: Partial<Delivery>) {
     const doc = this.wrap(data);
     this.docs.set(doc._id, doc);

@@ -32,7 +32,10 @@ export class DeliveryService {
       const ready = await this.orders.listReadyForDelivery(actor.token, requestId);
       for (const order of ready) {
         if (!(await this.repo.findByOrderId(order.id))) {
-          const pickup = { address: `Restaurant ${order.restaurant_id.slice(0, 8)}`, ...pseudoCoordinates(order.restaurant_id) };
+          const pickup = {
+            address: `Restaurant ${order.restaurant_id.slice(0, 8)}`,
+            ...pseudoCoordinates(order.restaurant_id),
+          };
           const dropoff = { address: order.delivery_address, ...pseudoCoordinates(order.id) };
           await this.repo.create({
             orderId: order.id,
@@ -52,6 +55,16 @@ export class DeliveryService {
     }
 
     return this.repo.listByStatus(DeliveryStatus.Unassigned);
+  }
+
+  /** Lists the active deliveries assigned to the connected courier. */
+  async listMine(actor: Actor): Promise<DeliveryDocument[]> {
+    this.ensureRole(actor, ROLE_COURIER);
+    return this.repo.listByCourier(actor.userId, [
+      DeliveryStatus.Assigned,
+      DeliveryStatus.PickedUp,
+      DeliveryStatus.InTransit,
+    ]);
   }
 
   /** Courier takes the delivery (UNASSIGNED → ASSIGNED) and the order goes IN_DELIVERY. */
@@ -144,8 +157,7 @@ export class DeliveryService {
     let delivery: DeliveryDocument | null = null;
     try {
       delivery = await this.repo.findById(id);
-    } catch {
-    }
+    } catch {}
     if (!delivery) {
       try {
         delivery = await this.repo.findByOrderId(id);
