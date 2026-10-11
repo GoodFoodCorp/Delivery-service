@@ -3,7 +3,7 @@ import { Actor } from '../../common/auth.util';
 import { DomainError } from '../../common/errors';
 import { DELIVERY_REPOSITORY, DeliveryRepository } from './delivery.repository';
 import { estimateDeliveryTime, pseudoCoordinates } from './geo';
-import { OrdersClient } from './orders.client';
+import { OrdersClient, ReadyOrder } from './orders.client';
 import { DeliveryDocument, DeliveryStatus } from './entities/delivery.schema';
 
 const ROLE_COURIER = 'livreur';
@@ -31,22 +31,7 @@ export class DeliveryService {
     try {
       const ready = await this.orders.listReadyForDelivery(actor.token, requestId);
       for (const order of ready) {
-        if (!(await this.repo.findByOrderId(order.id))) {
-          const pickup = {
-            address: `Restaurant ${order.restaurant_id.slice(0, 8)}`,
-            ...pseudoCoordinates(order.restaurant_id),
-          };
-          const dropoff = { address: order.delivery_address, ...pseudoCoordinates(order.id) };
-          await this.repo.create({
-            orderId: order.id,
-            customerId: order.customer_id,
-            restaurantId: order.restaurant_id,
-            status: DeliveryStatus.Unassigned,
-            pickup,
-            dropoff,
-            estimatedDeliveryTime: estimateDeliveryTime(pickup, dropoff),
-          });
-        }
+        await this.registerReadyOrder(order);
       }
     } catch (err) {
       // Sync is best-effort: existing deliveries stay listable when
@@ -55,6 +40,41 @@ export class DeliveryService {
     }
 
     return this.repo.listByStatus(DeliveryStatus.Unassigned);
+  }
+
+  /**
+   * Creates the UNASSIGNED delivery for a ready order. Idempotent: shared by
+   * the order-ready event consumer and the REST sync fallback.
+   */
+  async registerReadyOrder(order: ReadyOrder): Promise<{ delivery: DeliveryDocument; created: boolean }> {
+    const existing = await this.repo.findByOrderId(order.id);
+    if (existing) {
+      return { delivery: existing, created: false };
+    }
+    const pickup = {
+      address: `Restaurant ${order.restaurant_id.slice(0, 8)}`,
+      ...pseudoCoordinates(order.restaurant_id),
+    };
+    const dropoff = { address: order.delivery_address, ...pseudoCoordinates(order.id) };
+    try {
+      const delivery = await this.repo.create({
+        orderId: order.id,
+        customerId: order.customer_id,
+        restaurantId: order.restaurant_id,
+        status: DeliveryStatus.Unassigned,
+        pickup,
+        dropoff,
+        estimatedDeliveryTime: estimateDeliveryTime(pickup, dropoff),
+      });
+      return { delivery, created: true };
+    } catch (err) {
+      // Unique index on orderId: a concurrent consumer/REST sync created it first.
+      if ((err as { code?: number }).code === 11000) {
+        const raced = await this.repo.findByOrderId(order.id);
+        if (raced) return { delivery: raced, created: false };
+      }
+      throw err;
+    }
   }
 
   /** Lists the active deliveries assigned to the connected courier. */

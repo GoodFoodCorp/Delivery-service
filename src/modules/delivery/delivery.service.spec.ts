@@ -58,6 +58,12 @@ class FakeRepo implements DeliveryRepository {
     const list = this.positions.filter((p) => p.deliveryId === deliveryId);
     return (list[list.length - 1] ?? null) as never;
   }
+  async listActiveCourierIds() {
+    const active = [DeliveryStatus.Assigned, DeliveryStatus.PickedUp, DeliveryStatus.InTransit];
+    return [...this.docs.values()]
+      .filter((d) => d.livreurId && active.includes(d.status))
+      .map((d) => d.livreurId as string);
+  }
 }
 
 class FakeOrders {
@@ -101,6 +107,49 @@ async function expectDomainError(promise: Promise<unknown>, code: DomainErrorCod
   await expect(promise).rejects.toMatchObject({ code });
   await promise.catch((e) => expect(e).toBeInstanceOf(DomainError));
 }
+
+describe('registerReadyOrder', () => {
+  const order: ReadyOrder = {
+    id: 'order-9',
+    customer_id: 'cust-9',
+    restaurant_id: 'resto-9',
+    delivery_address: '1 rue A',
+  };
+
+  it('creates an UNASSIGNED delivery and reports it as created', async () => {
+    const { repo, service } = setup();
+
+    const result = await service.registerReadyOrder(order);
+
+    expect(result.created).toBe(true);
+    expect(result.delivery.orderId).toBe('order-9');
+    expect(result.delivery.status).toBe(DeliveryStatus.Unassigned);
+    expect(repo.docs.size).toBe(1);
+  });
+
+  it('is idempotent: a redelivered event does not create a second delivery', async () => {
+    const { repo, service } = setup();
+    await service.registerReadyOrder(order);
+
+    const again = await service.registerReadyOrder(order);
+
+    expect(again.created).toBe(false);
+    expect(repo.docs.size).toBe(1);
+  });
+
+  it('treats a duplicate-key error from a concurrent creation as already created', async () => {
+    const { repo, service } = setup();
+    const existing = await seedDelivery(repo, { orderId: 'order-9' });
+    const findSpy = jest.spyOn(repo, 'findByOrderId');
+    findSpy.mockResolvedValueOnce(null); // lost the race: not visible at first check
+    jest.spyOn(repo, 'create').mockRejectedValueOnce(Object.assign(new Error('E11000 duplicate key'), { code: 11000 }));
+
+    const result = await service.registerReadyOrder(order);
+
+    expect(result.created).toBe(false);
+    expect(result.delivery).toBe(existing);
+  });
+});
 
 // ── listAvailable / sync ────────────────────────────────────
 

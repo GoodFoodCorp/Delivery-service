@@ -17,6 +17,7 @@ export interface DeliveryRepository {
   save(doc: DeliveryDocument): Promise<DeliveryDocument>;
   addPosition(deliveryId: string, lat: number, lng: number, timestamp: Date): Promise<PositionUpdateDocument>;
   lastPosition(deliveryId: string): Promise<PositionUpdateDocument | null>;
+  listActiveCourierIds(): Promise<string[]>;
 }
 
 export const DELIVERY_REPOSITORY = Symbol('DELIVERY_REPOSITORY');
@@ -66,5 +67,14 @@ export class MongooseDeliveryRepository implements DeliveryRepository {
 
   lastPosition(deliveryId: string): Promise<PositionUpdateDocument | null> {
     return this.positions.findOne({ deliveryId }).sort({ timestamp: -1 }).exec();
+  }
+
+  async listActiveCourierIds(): Promise<string[]> {
+    const ids = await this.deliveries
+      .distinct('livreurId', {
+        status: { $in: [DeliveryStatus.Assigned, DeliveryStatus.PickedUp, DeliveryStatus.InTransit] },
+      })
+      .exec();
+    return ids.filter((id): id is string => typeof id === 'string');
   }
 }
