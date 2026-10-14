@@ -6,8 +6,8 @@ export interface ReadyOrder {
   customer_id: string;
   restaurant_id: string;
   delivery_address: string;
-  /** Order lifecycle status, mirrored from order-service. */
-  status: string;
+  /** Order lifecycle status, mirrored from order-service (absent on the order-ready event). */
+  status?: string;
 }
 
 /** The only order status from which a courier may collect the meal. */
@@ -28,7 +28,7 @@ export class OrdersClient {
 
   /** Orders a courier may claim — still IN_PREPARATION, or READY_FOR_PICKUP. */
   async listReadyForDelivery(bearerToken: string, requestId?: string): Promise<ReadyOrder[]> {
-    const res = await fetch(`${this.baseUrl}/api/orders/ready-for-delivery`, {
+    const res = await fetch(`${this.baseUrl}/ready-for-delivery`, {
       headers: this.headers(bearerToken, requestId),
     });
     if (!res.ok) {
@@ -43,7 +43,7 @@ export class OrdersClient {
    * than let a courier collect a meal that may not be cooked.
    */
   async getOrder(orderId: string, bearerToken: string, requestId?: string): Promise<ReadyOrder> {
-    const res = await fetch(`${this.baseUrl}/api/orders/${orderId}`, {
+    const res = await fetch(`${this.baseUrl}/${orderId}`, {
       headers: this.headers(bearerToken, requestId),
     });
     if (!res.ok) {
@@ -54,9 +54,14 @@ export class OrdersClient {
 
   /** Marks the order IN_DELIVERY / DELIVERED. Failures are logged but do not
    *  break the delivery flow (order status can be reconciled later). */
-  async updateOrderStatus(orderId: string, status: string, bearerToken: string, requestId?: string): Promise<void> {
+  async updateOrderStatus(
+    orderId: string,
+    status: string,
+    bearerToken: string,
+    requestId?: string,
+  ): Promise<void> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/orders/${orderId}/status`, {
+      const res = await fetch(`${this.baseUrl}/${orderId}/status`, {
         method: 'PATCH',
         headers: { ...this.headers(bearerToken, requestId), 'Content-Type': 'application/json' },
         body: JSON.stringify({ status }),

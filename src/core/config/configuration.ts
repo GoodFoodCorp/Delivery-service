@@ -5,6 +5,7 @@ export interface AppConfig {
   mongoUri: string;
   jwtSecret: string;
   orderServiceUrl: string;
+  rabbitmqUrl: string;
 }
 
 export function loadConfig(): AppConfig {
@@ -18,5 +19,6 @@ export function loadConfig(): AppConfig {
     mongoUri: process.env.MONGODB_URI ?? 'mongodb://localhost:27017/delivery_db',
     jwtSecret,
     orderServiceUrl: process.env.ORDER_SERVICE_URL ?? 'http://order-service:8082',
+    rabbitmqUrl: process.env.RABBITMQ_URL ?? '',
   };
 }

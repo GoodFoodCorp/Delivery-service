@@ -13,6 +13,9 @@ import { DomainError } from '../../common/errors';
 import { DeliveryService } from './delivery.service';
 import { SubscribeDto } from './dto/subscribe.dto';
 import { UpdatePositionDto } from './dto/update-position.dto';
+import { DeliveryDocument } from './entities/delivery.schema';
+
+const COURIERS_ROOM = 'couriers';
 
 interface AuthedSocket extends Socket {
   data: { actor?: Actor };
@@ -44,12 +47,20 @@ export class DeliveryGateway implements OnGatewayConnection {
       client.handshake.headers.authorization?.replace(/^Bearer /, '');
     try {
       client.data.actor = verifyToken(token ?? '');
+      if (client.data.actor.roles.includes('livreur')) {
+        void client.join(COURIERS_ROOM);
+      }
     } catch {
       client.emit('error', { error: 'unauthorized' });
       client.disconnect(true);
       return;
     }
     this.logger.log(`ws connected: ${client.data.actor.userId}`);
+  }
+
+  /** Pushes a newly available delivery to every connected courier. */
+  emitAvailable(delivery: DeliveryDocument): void {
+    this.server.to(COURIERS_ROOM).emit('delivery:available', delivery);
   }
 
   // Plain return values are delivered through the Socket.IO ack callback.
