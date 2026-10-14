@@ -47,8 +47,19 @@ export class CourierProfileService {
     return this.toResponse(profile);
   }
 
-  async setAvailability(userId: string, isAvailable: boolean) {
-    const profile = await this.profiles.findOneAndUpdate({ userId }, { isAvailable }, { new: true }).exec();
+  /**
+   * Toggles the courier's online status. `canCreate` (true for accounts with the
+   * livreur role) lets couriers created before courier profiles existed get a
+   * minimal profile on first use instead of a 404; they can complete it later.
+   */
+  async setAvailability(userId: string, isAvailable: boolean, canCreate = false) {
+    const profile = await this.profiles
+      .findOneAndUpdate(
+        { userId },
+        canCreate ? { isAvailable, $setOnInsert: { siret: '', city: '', iban: '' } } : { isAvailable },
+        canCreate ? { upsert: true, new: true, setDefaultsOnInsert: true } : { new: true },
+      )
+      .exec();
     if (!profile) throw new NotFoundException('Profil livreur introuvable');
     return this.toResponse(profile);
   }

@@ -27,7 +27,7 @@ export class CourierProfileController {
 
   @Patch('availability')
   availability(@CurrentActor() actor: Actor, @Body() body: { isAvailable: boolean }) {
-    return this.profiles.setAvailability(actor.userId, body.isAvailable);
+    return this.profiles.setAvailability(actor.userId, body.isAvailable, actor.roles.includes('livreur'));
   }
 
   @Put('push-token')
