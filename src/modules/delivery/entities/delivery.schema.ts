@@ -62,6 +62,10 @@ export class Delivery {
 
   @Prop({ type: Date, default: null })
   estimatedDeliveryTime: Date | null;
+
+  /** Courier pay for this delivery, in cents. Null on deliveries created before fees existed. */
+  @Prop({ type: Number, default: null })
+  courierFeeCents: number | null;
 }
 
 export type DeliveryDocument = HydratedDocument<Delivery>;

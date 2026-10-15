@@ -58,6 +58,11 @@ class FakeRepo implements DeliveryRepository {
     const list = this.positions.filter((p) => p.deliveryId === deliveryId);
     return (list[list.length - 1] ?? null) as never;
   }
+  async listDeliveredByCourier(courierId: string) {
+    return [...this.docs.values()]
+      .filter((d) => d.livreurId === courierId && d.status === DeliveryStatus.Delivered)
+      .sort((a, b) => (b.deliveredAt?.getTime() ?? 0) - (a.deliveredAt?.getTime() ?? 0)) as unknown as DeliveryDocument[];
+  }
   async listActiveCourierIds() {
     const active = [DeliveryStatus.Assigned, DeliveryStatus.PickedUp, DeliveryStatus.InTransit];
     return [...this.docs.values()]
@@ -138,6 +143,14 @@ describe('registerReadyOrder', () => {
     expect(repo.docs.size).toBe(1);
   });
 
+  it('stores the courier fee computed from the pickup/dropoff distance', async () => {
+    const { service } = setup();
+
+    const { delivery } = await service.registerReadyOrder(order);
+
+    expect(delivery.courierFeeCents).toBeGreaterThanOrEqual(300);
+  });
+
   it('is idempotent: a redelivered event does not create a second delivery', async () => {
     const { repo, service } = setup();
     await service.registerReadyOrder(order);
@@ -159,6 +172,55 @@ describe('registerReadyOrder', () => {
 
     expect(result.created).toBe(false);
     expect(result.delivery).toBe(existing);
+  });
+});
+
+describe('courierHistory', () => {
+  const delivered = (overrides: Partial<Delivery>) =>
+    ({
+      status: DeliveryStatus.Delivered,
+      livreurId: 'liv-1',
+      ...overrides,
+    }) as Partial<Delivery>;
+
+  it('lists only the connected courier\'s delivered trips, newest first, with their fee', async () => {
+    const { repo, service } = setup();
+    await seedDelivery(repo, delivered({ orderId: 'o-old', courierFeeCents: 400, deliveredAt: new Date('2026-10-01T10:00:00Z') }));
+    await seedDelivery(repo, delivered({ orderId: 'o-new', courierFeeCents: 500, deliveredAt: new Date('2026-10-02T10:00:00Z') }));
+    await seedDelivery(repo, delivered({ orderId: 'o-other', livreurId: 'liv-2', courierFeeCents: 999 }));
+    await seedDelivery(repo, { orderId: 'o-active', livreurId: 'liv-1', status: DeliveryStatus.PickedUp });
+
+    const history = await service.courierHistory(courier);
+
+    expect(history.trips.map((t) => t.orderId)).toEqual(['o-new', 'o-old']);
+    expect(history.trips[0]).toMatchObject({ amount: 5, pickupAddress: 'resto', dropoffAddress: 'client' });
+    expect(history.completedTrips).toBe(2);
+    expect(history.totalEarned).toBe(9);
+    expect(history.availableBalance).toBe(9);
+  });
+
+  it('computes the fee on the fly for deliveries created before fees were stored', async () => {
+    const { repo, service } = setup();
+    await seedDelivery(repo, delivered({ orderId: 'o-legacy', deliveredAt: new Date('2026-10-01T10:00:00Z') }));
+
+    const history = await service.courierHistory(courier);
+
+    expect(history.trips).toHaveLength(1);
+    expect(history.trips[0].amount).toBeGreaterThanOrEqual(3);
+    expect(history.totalEarned).toBe(history.trips[0].amount);
+  });
+
+  it('returns an empty history for a courier with no delivered trip', async () => {
+    const { service } = setup();
+
+    const history = await service.courierHistory(courier);
+
+    expect(history).toEqual({ totalEarned: 0, availableBalance: 0, completedTrips: 0, trips: [] });
+  });
+
+  it('refuses non-couriers', async () => {
+    const { service } = setup();
+    await expectDomainError(service.courierHistory(customer), DomainErrorCode.Forbidden);
   });
 });
 

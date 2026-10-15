@@ -18,6 +18,7 @@ export interface DeliveryRepository {
   addPosition(deliveryId: string, lat: number, lng: number, timestamp: Date): Promise<PositionUpdateDocument>;
   lastPosition(deliveryId: string): Promise<PositionUpdateDocument | null>;
   listActiveCourierIds(): Promise<string[]>;
+  listDeliveredByCourier(courierId: string): Promise<DeliveryDocument[]>;
 }
 
 export const DELIVERY_REPOSITORY = Symbol('DELIVERY_REPOSITORY');
@@ -76,5 +77,9 @@ export class MongooseDeliveryRepository implements DeliveryRepository {
       })
       .exec();
     return ids.filter((id): id is string => typeof id === 'string');
+  }
+
+  listDeliveredByCourier(courierId: string): Promise<DeliveryDocument[]> {
+    return this.deliveries.find({ livreurId: courierId, status: DeliveryStatus.Delivered }).sort({ deliveredAt: -1 }).exec();
   }
 }

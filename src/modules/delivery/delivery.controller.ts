@@ -29,6 +29,13 @@ export class DeliveryController {
     return this.deliveries.listMine(actor);
   }
 
+  @Get('history')
+  @Roles('livreur')
+  @ApiOperation({ summary: 'Earnings and delivered trips of the connected courier' })
+  history(@CurrentActor() actor: Actor) {
+    return this.deliveries.courierHistory(actor);
+  }
+
   @Post(':id/accept')
   @Roles('livreur')
   @ApiOperation({ summary: 'Courier takes the delivery, even while the order is still being prepared' })

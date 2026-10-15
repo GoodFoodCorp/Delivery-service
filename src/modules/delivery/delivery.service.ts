@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Actor } from '../../common/auth.util';
 import { DomainError } from '../../common/errors';
 import { DELIVERY_REPOSITORY, DeliveryRepository } from './delivery.repository';
-import { estimateDeliveryTime, pseudoCoordinates } from './geo';
+import { computeCourierFeeCents, estimateDeliveryTime, pseudoCoordinates } from './geo';
 import { ORDER_READY_FOR_PICKUP, OrdersClient, ReadyOrder } from './orders.client';
 import { DeliveryDocument, DeliveryStatus } from './entities/delivery.schema';
 
@@ -67,6 +67,7 @@ export class DeliveryService {
         pickup,
         dropoff,
         estimatedDeliveryTime: estimateDeliveryTime(pickup, dropoff),
+        courierFeeCents: computeCourierFeeCents(pickup, dropoff),
       });
       return { delivery, created: true };
     } catch (err) {
@@ -77,6 +78,27 @@ export class DeliveryService {
       }
       throw err;
     }
+  }
+
+  /**
+   * Earnings history of the connected courier, derived from their delivered
+   * trips. Deliveries created before fees were stored get the fee computed
+   * at the current tariff. There is no payout feature yet, so the available
+   * balance equals the total earned.
+   */
+  async courierHistory(actor: Actor) {
+    this.ensureRole(actor, ROLE_COURIER);
+    const delivered = await this.repo.listDeliveredByCourier(actor.userId);
+    const trips = delivered.map((d) => ({
+      id: String(d._id),
+      orderId: d.orderId,
+      pickupAddress: d.pickup.address,
+      dropoffAddress: d.dropoff.address,
+      deliveredAt: d.deliveredAt,
+      amount: (d.courierFeeCents ?? computeCourierFeeCents(d.pickup, d.dropoff)) / 100,
+    }));
+    const totalEarned = Math.round(trips.reduce((sum, t) => sum + t.amount * 100, 0)) / 100;
+    return { totalEarned, availableBalance: totalEarned, completedTrips: trips.length, trips };
   }
 
   /** Lists the active deliveries assigned to the connected courier. */

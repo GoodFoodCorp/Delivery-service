@@ -39,3 +39,25 @@ export function estimateDeliveryTime(from: { lat: number; lng: number }, to: { l
   const hours = distanceKm(from, to) / 20;
   return new Date(Date.now() + Math.max(hours, 0.05) * 3600 * 1000);
 }
+
+const DEFAULT_FEE_BASE_CENTS = 300;
+const DEFAULT_FEE_PER_KM_CENTS = 60;
+
+function envCents(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+/**
+ * Courier pay for one delivery: base fee + per-km rate over the straight-line
+ * pickup → dropoff distance, rounded to the cent. Tariff is configurable via
+ * COURIER_FEE_BASE_CENTS / COURIER_FEE_PER_KM_CENTS (default 3.00 EUR + 0.60 EUR/km).
+ */
+export function computeCourierFeeCents(
+  pickup: { lat: number; lng: number },
+  dropoff: { lat: number; lng: number },
+): number {
+  const base = envCents('COURIER_FEE_BASE_CENTS', DEFAULT_FEE_BASE_CENTS);
+  const perKm = envCents('COURIER_FEE_PER_KM_CENTS', DEFAULT_FEE_PER_KM_CENTS);
+  return Math.round(base + perKm * distanceKm(pickup, dropoff));
+}
