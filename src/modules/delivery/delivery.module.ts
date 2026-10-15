@@ -12,6 +12,10 @@ import { CourierProfileController } from './courier-profile.controller';
 import { CourierProfileService } from './courier-profile.service';
 import { AvailabilityNotifier } from './availability.notifier';
 import { PushService } from './push.service';
+import { Withdrawal, WithdrawalSchema } from './entities/withdrawal.schema';
+import { MongooseWithdrawalRepository, WITHDRAWAL_REPOSITORY } from './withdrawal.repository';
+import { WithdrawalController } from './withdrawal.controller';
+import { WithdrawalService } from './withdrawal.service';
 import { OrderReadyConsumer } from './messaging/order-ready.consumer';
 import { OrderReadyHandler } from './messaging/order-ready.handler';
 
@@ -21,9 +25,10 @@ import { OrderReadyHandler } from './messaging/order-ready.handler';
       { name: Delivery.name, schema: DeliverySchema },
       { name: PositionUpdate.name, schema: PositionUpdateSchema },
       { name: CourierProfile.name, schema: CourierProfileSchema },
+      { name: Withdrawal.name, schema: WithdrawalSchema },
     ]),
   ],
-  controllers: [DeliveryController, CourierProfileController],
+  controllers: [DeliveryController, CourierProfileController, WithdrawalController],
   providers: [
     DeliveryService,
     DeliveryGateway,
@@ -31,6 +36,8 @@ import { OrderReadyHandler } from './messaging/order-ready.handler';
     CourierProfileService,
     AvailabilityNotifier,
     PushService,
+    WithdrawalService,
+    { provide: WITHDRAWAL_REPOSITORY, useClass: MongooseWithdrawalRepository },
     OrderReadyHandler,
     OrderReadyConsumer,
     { provide: DELIVERY_REPOSITORY, useClass: MongooseDeliveryRepository },

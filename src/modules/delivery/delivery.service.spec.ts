@@ -196,7 +196,6 @@ describe('courierHistory', () => {
     expect(history.trips[0]).toMatchObject({ amount: 5, pickupAddress: 'resto', dropoffAddress: 'client' });
     expect(history.completedTrips).toBe(2);
     expect(history.totalEarned).toBe(9);
-    expect(history.availableBalance).toBe(9);
   });
 
   it('computes the fee on the fly for deliveries created before fees were stored', async () => {
@@ -215,7 +214,7 @@ describe('courierHistory', () => {
 
     const history = await service.courierHistory(courier);
 
-    expect(history).toEqual({ totalEarned: 0, availableBalance: 0, completedTrips: 0, trips: [] });
+    expect(history).toEqual({ totalEarned: 0, completedTrips: 0, trips: [] });
   });
 
   it('refuses non-couriers', async () => {

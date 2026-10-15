@@ -83,8 +83,8 @@ export class DeliveryService {
   /**
    * Earnings history of the connected courier, derived from their delivered
    * trips. Deliveries created before fees were stored get the fee computed
-   * at the current tariff. There is no payout feature yet, so the available
-   * balance equals the total earned.
+   * at the current tariff. The available balance (minus withdrawals) is
+   * computed by WithdrawalService.
    */
   async courierHistory(actor: Actor) {
     this.ensureRole(actor, ROLE_COURIER);
@@ -98,7 +98,7 @@ export class DeliveryService {
       amount: (d.courierFeeCents ?? computeCourierFeeCents(d.pickup, d.dropoff)) / 100,
     }));
     const totalEarned = Math.round(trips.reduce((sum, t) => sum + t.amount * 100, 0)) / 100;
-    return { totalEarned, availableBalance: totalEarned, completedTrips: trips.length, trips };
+    return { totalEarned, completedTrips: trips.length, trips };
   }
 
   /** Lists the active deliveries assigned to the connected courier. */

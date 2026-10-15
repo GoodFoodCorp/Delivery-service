@@ -30,6 +30,12 @@ export class CourierProfileController {
     return this.profiles.setAvailability(actor.userId, body.isAvailable, actor.roles.includes('livreur'));
   }
 
+  @Put('iban')
+  @Roles('livreur')
+  iban(@CurrentActor() actor: Actor, @Body() body: { iban: string }) {
+    return this.profiles.setIban(actor.userId, body.iban, true);
+  }
+
   @Put('push-token')
   pushToken(@CurrentActor() actor: Actor, @Body() body: { pushToken: string }) {
     return this.profiles.setPushToken(actor.userId, body.pushToken);

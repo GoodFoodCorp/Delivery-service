@@ -6,6 +6,7 @@ import { Roles } from '../../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { DeliveryService } from './delivery.service';
+import { WithdrawalService } from './withdrawal.service';
 
 /** Thin HTTP layer: no business logic, delegates to DeliveryService. */
 @ApiTags('deliveries')
@@ -13,7 +14,10 @@ import { DeliveryService } from './delivery.service';
 @Controller('api/deliveries')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class DeliveryController {
-  constructor(private readonly deliveries: DeliveryService) {}
+  constructor(
+    private readonly deliveries: DeliveryService,
+    private readonly withdrawals: WithdrawalService,
+  ) {}
 
   @Get('available')
   @Roles('livreur', 'admin')
@@ -31,9 +35,9 @@ export class DeliveryController {
 
   @Get('history')
   @Roles('livreur')
-  @ApiOperation({ summary: 'Earnings and delivered trips of the connected courier' })
+  @ApiOperation({ summary: 'Earnings, delivered trips, balance and withdrawals of the connected courier' })
   history(@CurrentActor() actor: Actor) {
-    return this.deliveries.courierHistory(actor);
+    return this.withdrawals.overview(actor);
   }
 
   @Post(':id/accept')

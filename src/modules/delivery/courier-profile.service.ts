@@ -6,6 +6,7 @@ import {
   CourierProfileDocument,
   CourierVehicleType,
 } from './entities/courier-profile.schema';
+import { isValidIban, normalizeIban } from './iban';
 
 export interface CourierProfileInput {
   vehicleType: CourierVehicleType;
@@ -62,6 +63,27 @@ export class CourierProfileService {
       .exec();
     if (!profile) throw new NotFoundException('Profil livreur introuvable');
     return this.toResponse(profile);
+  }
+
+  /** Courier payout IBAN. Like setAvailability, creates a minimal profile for livreur accounts without one. */
+  async setIban(userId: string, iban: string, canCreate = false) {
+    if (!isValidIban(iban)) throw new BadRequestException('IBAN invalide');
+    const normalized = normalizeIban(iban);
+    const profile = await this.profiles
+      .findOneAndUpdate(
+        { userId },
+        canCreate ? { iban: normalized, $setOnInsert: { siret: '', city: '' } } : { iban: normalized },
+        canCreate ? { upsert: true, new: true, setDefaultsOnInsert: true } : { new: true },
+      )
+      .exec();
+    if (!profile) throw new NotFoundException('Profil livreur introuvable');
+    return this.toResponse(profile);
+  }
+
+  /** Stored IBAN, or an empty string when the courier has none. */
+  async getIban(userId: string): Promise<string> {
+    const profile = await this.profiles.findOne({ userId }).select('+iban').lean().exec();
+    return profile?.iban ?? '';
   }
 
   async setPushToken(userId: string, pushToken: string) {
