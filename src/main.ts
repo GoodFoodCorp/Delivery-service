@@ -5,8 +5,10 @@ import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { RedisIoAdapter } from './core/realtime/redis-io.adapter';
+import { assertEncryptionConfigured } from './common/secret-box';
 
 async function bootstrap(): Promise<void> {
+  assertEncryptionConfigured();
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   app.useLogger(app.get(Logger));
 

@@ -100,6 +100,24 @@ export class Delivery {
   /** Tip left by the customer, entirely for the courier. */
   @Prop({ type: Number, default: 0 })
   tipCents: number;
+
+  /** 4-digit code the customer gives the courier at the door: proof of
+   *  delivery. Only the customer can read it. */
+  @Prop({ type: String, default: null, select: false })
+  handoverCode: string | null;
+
+  @Prop({ type: Number, default: 0 })
+  handoverAttempts: number;
+
+  /** Customer's rating of the delivery, 1 to 5. */
+  @Prop({ type: Number, default: null, min: 1, max: 5 })
+  rating: number | null;
+
+  @Prop({ type: String, default: '' })
+  ratingComment: string;
+
+  @Prop({ type: Date, default: null })
+  ratedAt: Date | null;
 }
 
 export type DeliveryDocument = HydratedDocument<Delivery>;

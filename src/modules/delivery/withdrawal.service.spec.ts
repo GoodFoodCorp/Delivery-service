@@ -55,6 +55,7 @@ function setup(opts: { totalEarned?: number; iban?: string } = {}) {
       completedTrips: 6,
       trips: [],
     }),
+    ratingOf: jest.fn().mockResolvedValue({ average: 4.5, count: 2 }),
   };
   const profiles = { getIban: jest.fn().mockResolvedValue(opts.iban ?? VALID_IBAN) };
   const service = new WithdrawalService(repo, deliveries as never, profiles as never);

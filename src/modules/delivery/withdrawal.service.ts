@@ -5,6 +5,7 @@ import { CourierProfileService } from './courier-profile.service';
 import { DeliveryService } from './delivery.service';
 import { WithdrawalDocument, WithdrawalStatus } from './entities/withdrawal.schema';
 import { isValidIban, maskIban } from './iban';
+import { open, seal } from '../../common/secret-box';
 import { WITHDRAWAL_REPOSITORY, WithdrawalRepository } from './withdrawal.repository';
 
 const ROLE_COURIER = 'livreur';
@@ -25,10 +26,11 @@ export class WithdrawalService {
   /** Earnings history + payout state, in a single payload for the mobile screen. */
   async overview(actor: Actor) {
     this.ensureRole(actor, ROLE_COURIER);
-    const [history, withdrawals, iban] = await Promise.all([
+    const [history, withdrawals, iban, rating] = await Promise.all([
       this.deliveries.courierHistory(actor),
       this.repo.listByCourier(actor.userId),
       this.profiles.getIban(actor.userId),
+      this.deliveries.ratingOf(actor.userId),
     ]);
     const { available, paidCents, pendingCents } = this.balance(history.totalEarned, withdrawals);
     return {
@@ -40,6 +42,7 @@ export class WithdrawalService {
       completedTrips: history.completedTrips,
       trips: history.trips,
       ibanMasked: maskIban(iban),
+      rating,
       withdrawals: withdrawals.map((w) => this.toView(w)),
     };
   }
@@ -74,7 +77,7 @@ export class WithdrawalService {
       const created = await this.repo.create({
         livreurId: actor.userId,
         amountCents: available,
-        iban,
+        iban: seal(iban),
         ibanMasked: maskIban(iban),
         status: WithdrawalStatus.Pending,
       });
@@ -93,7 +96,7 @@ export class WithdrawalService {
     return (await this.repo.listByStatus(status)).map((w) => ({
       ...this.toView(w),
       livreurId: w.livreurId,
-      iban: w.iban,
+      iban: open(w.iban),
     }));
   }
 

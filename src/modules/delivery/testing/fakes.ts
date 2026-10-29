@@ -47,6 +47,11 @@ export class FakeRepo implements DeliveryRepository {
       estimatedDeliveryTime: null,
       courierFeeCents: null,
       tipCents: 0,
+      handoverCode: null,
+      handoverAttempts: 0,
+      rating: null,
+      ratingComment: '',
+      ratedAt: null,
       createdAt: new Date(),
       ...data,
     } as FakeDoc;
@@ -100,6 +105,25 @@ export class FakeRepo implements DeliveryRepository {
   }
   async listLegacyDeliveredByCourier(courierId: string) {
     return this.delivered(courierId).filter((d) => d.courierFeeCents === null).map((d) => this.out(d)!) as DeliveryDocument[];
+  }
+  async handoverCodeOf(id: string) {
+    return this.docs.get(id)?.handoverCode ?? null;
+  }
+  async recordHandoverAttempt(id: string) {
+    const d = this.docs.get(id)!;
+    d.handoverAttempts = (d.handoverAttempts ?? 0) + 1;
+    return d.handoverAttempts;
+  }
+  async rate(id: string, customerId: string, rating: number, comment: string, at: Date) {
+    const d = this.docs.get(id);
+    if (!d || d.customerId !== customerId || d.status !== DeliveryStatus.Delivered || d.rating) return null;
+    Object.assign(d, { rating, ratingComment: comment, ratedAt: at });
+    return this.out(d);
+  }
+  async ratingOf(courierId: string) {
+    const rated = [...this.docs.values()].filter((d) => d.livreurId === courierId && d.rating);
+    if (!rated.length) return { average: null, count: 0 };
+    return { average: rated.reduce((s, d) => s + (d.rating as number), 0) / rated.length, count: rated.length };
   }
   async earningsOf(courierId: string): Promise<CourierEarnings> {
     const list = this.delivered(courierId);
