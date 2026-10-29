@@ -51,6 +51,13 @@ export interface DeliveryRepository {
   /** Delivered trips created before fees were stored (fee computed on the fly). */
   listLegacyDeliveredByCourier(courierId: string): Promise<DeliveryDocument[]>;
   earningsOf(courierId: string): Promise<CourierEarnings>;
+  /** The handover code of a delivery (never returned by the other reads). */
+  handoverCodeOf(id: string): Promise<string | null>;
+  /** Counts a wrong code; returns the attempts made so far. */
+  recordHandoverAttempt(id: string): Promise<number>;
+  /** Stores the customer's rating once, on a delivered delivery. */
+  rate(id: string, customerId: string, rating: number, comment: string, at: Date): Promise<DeliveryDocument | null>;
+  ratingOf(courierId: string): Promise<{ average: number | null; count: number }>;
 }
 
 export const DELIVERY_REPOSITORY = Symbol('DELIVERY_REPOSITORY');
@@ -183,5 +190,38 @@ export class MongooseDeliveryRepository implements DeliveryRepository {
       ])
       .exec();
     return { storedCents: row?.storedCents ?? 0, completedTrips: row?.completedTrips ?? 0 };
+  }
+
+  async handoverCodeOf(id: string): Promise<string | null> {
+    const doc = await this.deliveries.findById(id).select('+handoverCode').lean().exec();
+    return doc?.handoverCode ?? null;
+  }
+
+  async recordHandoverAttempt(id: string): Promise<number> {
+    const doc = await this.deliveries
+      .findByIdAndUpdate(id, { $inc: { handoverAttempts: 1 } }, { new: true })
+      .lean()
+      .exec();
+    return doc?.handoverAttempts ?? 0;
+  }
+
+  rate(id: string, customerId: string, rating: number, comment: string, at: Date): Promise<DeliveryDocument | null> {
+    return this.deliveries
+      .findOneAndUpdate(
+        { _id: id, customerId, status: DeliveryStatus.Delivered, rating: null },
+        { $set: { rating, ratingComment: comment, ratedAt: at } },
+        { new: true },
+      )
+      .exec();
+  }
+
+  async ratingOf(courierId: string): Promise<{ average: number | null; count: number }> {
+    const [row] = await this.deliveries
+      .aggregate<{ average: number; count: number }>([
+        { $match: { livreurId: courierId, rating: { $ne: null } } },
+        { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } },
+      ])
+      .exec();
+    return row ? { average: Math.round(row.average * 10) / 10, count: row.count } : { average: null, count: 0 };
   }
 }

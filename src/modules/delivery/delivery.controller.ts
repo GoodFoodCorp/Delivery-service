@@ -1,4 +1,4 @@
-import { Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Actor } from '../../common/auth.util';
 import { CurrentActor } from '../../common/decorators/current-actor.decorator';
@@ -76,9 +76,21 @@ export class DeliveryController {
 
   @Post(':id/dropoff')
   @Roles('livreur')
-  @ApiOperation({ summary: 'Order delivered to the customer (timestamped)' })
-  dropoff(@CurrentActor() actor: Actor, @Param('id') id: string, @Headers('x-request-id') requestId?: string) {
-    return this.deliveries.dropoff(actor, id, requestId);
+  @ApiOperation({ summary: 'Order delivered: requires the customer handover code {code}' })
+  dropoff(
+    @CurrentActor() actor: Actor,
+    @Param('id') id: string,
+    @Body() body: { code?: string },
+    @Headers('x-request-id') requestId?: string,
+  ) {
+    return this.deliveries.dropoff(actor, id, body?.code, requestId);
+  }
+
+  @Post(':id/rating')
+  @Roles('user')
+  @ApiOperation({ summary: 'The customer rates a delivered delivery {rating: 1-5, comment}' })
+  rate(@CurrentActor() actor: Actor, @Param('id') id: string, @Body() body: { rating: number; comment?: string }) {
+    return this.deliveries.rate(actor, id, Number(body?.rating), body?.comment ?? '');
   }
 
   @Get(':id')

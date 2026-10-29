@@ -7,6 +7,7 @@ import {
   CourierVehicleType,
 } from './entities/courier-profile.schema';
 import { isValidIban, normalizeIban } from './iban';
+import { open, seal } from '../../common/secret-box';
 
 /** A position older than this is not used to target couriers. */
 const LOCATION_FRESHNESS_MS = 30 * 60 * 1000;
@@ -44,7 +45,7 @@ export class CourierProfileService {
     const profile = await this.profiles
       .findOneAndUpdate(
         { userId },
-        { ...input, userId, city: input.city.trim(), iban: input.iban.trim().toUpperCase() },
+        { ...input, userId, city: input.city.trim(), iban: seal(normalizeIban(input.iban)) },
         { upsert: true, new: true, setDefaultsOnInsert: true },
       )
       .select('+iban')
@@ -76,7 +77,7 @@ export class CourierProfileService {
     const profile = await this.profiles
       .findOneAndUpdate(
         { userId },
-        canCreate ? { iban: normalized, $setOnInsert: { siret: '', city: '' } } : { iban: normalized },
+        canCreate ? { iban: seal(normalized), $setOnInsert: { siret: '', city: '' } } : { iban: seal(normalized) },
         canCreate ? { upsert: true, new: true, setDefaultsOnInsert: true } : { new: true },
       )
       .exec();
@@ -87,7 +88,7 @@ export class CourierProfileService {
   /** Stored IBAN, or an empty string when the courier has none. */
   async getIban(userId: string): Promise<string> {
     const profile = await this.profiles.findOne({ userId }).select('+iban').lean().exec();
-    return profile?.iban ?? '';
+    return open(profile?.iban ?? '');
   }
 
   async setPushToken(userId: string, pushToken: string) {

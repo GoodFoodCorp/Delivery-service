@@ -189,7 +189,7 @@ describe('pickup and dropoff', () => {
     expect(picked.status).toBe(DeliveryStatus.PickedUp);
     expect(picked.pickedUpAt).toBeInstanceOf(Date);
 
-    const dropped = await service.dropoff(courier, id);
+    const dropped = await service.dropoff(courier, id, undefined);
     expect(dropped.status).toBe(DeliveryStatus.Delivered);
     expect(dropped.deliveredAt).toBeInstanceOf(Date);
     expect(orders.statusCalls.map((c) => c.status)).toEqual(['IN_DELIVERY', 'DELIVERED']);
@@ -297,5 +297,62 @@ describe('getById and canWatch', () => {
       await expectDomainError(service.getById(actor, String(d._id)), DomainErrorCode.Forbidden);
       await expect(service.canWatch(actor, String(d._id))).resolves.toBe(false);
     }
+  });
+});
+
+describe('proof of delivery', () => {
+  async function onTheWay() {
+    const ctx = setup();
+    const { delivery } = await ctx.service.registerReadyOrder({ ...readyOrder, customer_id: 'cust-1', restaurant_id: 'resto-1' });
+    const id = String(delivery!._id);
+    await ctx.service.accept(courier, id);
+    await ctx.service.pickup(courier, id);
+    return { ...ctx, id };
+  }
+
+  it('gives the code to the customer only', async () => {
+    const { service, id } = await onTheWay();
+
+    const forCustomer = await service.getById(customer, id);
+    const forCourier = await service.getById(courier, id);
+
+    expect(forCustomer.handoverCode).toMatch(/^\d{4}$/);
+    expect(forCourier).not.toHaveProperty('handoverCode');
+  });
+
+  it('requires the right code to drop off, and locks after 5 wrong ones', async () => {
+    const { service, repo, id } = await onTheWay();
+    const code = (await repo.handoverCodeOf(id))!;
+    const wrong = code === '0000' ? '1111' : '0000';
+
+    await expectDomainError(service.dropoff(courier, id, wrong), DomainErrorCode.Validation);
+    await expect(service.dropoff(courier, id, code)).resolves.toMatchObject({ status: DeliveryStatus.Delivered });
+
+    const other = await onTheWay();
+    const otherCode = (await other.repo.handoverCodeOf(other.id))!;
+    const bad = otherCode === '0000' ? '1111' : '0000';
+    for (let i = 0; i < 5; i++) {
+      await expectDomainError(other.service.dropoff(courier, other.id, bad), DomainErrorCode.Validation);
+    }
+    await expectDomainError(other.service.dropoff(courier, other.id, otherCode), DomainErrorCode.Forbidden);
+  });
+});
+
+describe('rating', () => {
+  it('lets the customer rate a delivered delivery once', async () => {
+    const { service, repo } = setup();
+    const d = await seedDelivery(repo, { status: DeliveryStatus.Delivered, livreurId: 'liv-1' });
+
+    await expectDomainError(service.rate(customer, String(d._id), 6), DomainErrorCode.Validation);
+    await expectDomainError(service.rate(otherCourier, String(d._id), 5), DomainErrorCode.Forbidden);
+    await expect(service.rate(customer, String(d._id), 4, 'rapide')).resolves.toMatchObject({ rating: 4 });
+    await expectDomainError(service.rate(customer, String(d._id), 5), DomainErrorCode.Conflict);
+    await expect(service.ratingOf('liv-1')).resolves.toEqual({ average: 4, count: 1 });
+  });
+
+  it('refuses to rate a delivery still on its way', async () => {
+    const { service, repo } = setup();
+    const d = await seedDelivery(repo, { status: DeliveryStatus.InTransit, livreurId: 'liv-1' });
+    await expectDomainError(service.rate(customer, String(d._id), 5), DomainErrorCode.Conflict);
   });
 });

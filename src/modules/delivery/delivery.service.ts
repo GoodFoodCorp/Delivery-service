@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { randomInt } from 'node:crypto';
 import { Actor } from '../../common/auth.util';
 import { DomainError, DomainErrorCode } from '../../common/errors';
 import { DELIVERY_REPOSITORY, DeliveryRepository, NearQuery } from './delivery.repository';
@@ -20,6 +21,9 @@ const ROLE_MANAGER = 'manager';
 /** Bounds of the lists returned at once. */
 const MAX_AVAILABLE = 100;
 const HISTORY_PAGE = 50;
+
+/** Wrong handover codes allowed before the delivery needs the support team. */
+const MAX_HANDOVER_ATTEMPTS = 5;
 
 /** A courier's GPS point is stored at most this often (the live feed still gets every point). */
 const POSITION_STORE_INTERVAL_MS = 3000;
@@ -95,6 +99,7 @@ export class DeliveryService {
         estimatedDeliveryTime: estimateDeliveryTime(pickup, dropoff),
         courierFeeCents: computeCourierFeeCents(pickup, dropoff),
         tipCents: order.tip_cents ?? 0,
+        handoverCode: randomInt(0, 10_000).toString().padStart(4, '0'),
       });
       return { delivery, created: true };
     } catch (err) {
@@ -196,15 +201,41 @@ export class DeliveryService {
     });
   }
 
-  /** Courier drops the order off (PICKED_UP/IN_TRANSIT → DELIVERED, timestamped). */
-  async dropoff(actor: Actor, deliveryId: string, requestId?: string): Promise<DeliveryDocument> {
+  /**
+   * Courier drops the order off (PICKED_UP/IN_TRANSIT → DELIVERED). The
+   * customer's 4-digit handover code proves the meal reached them; after 5
+   * wrong codes the delivery is locked for the support team.
+   */
+  async dropoff(actor: Actor, deliveryId: string, code?: string, requestId?: string): Promise<DeliveryDocument> {
     const delivery = await this.getOwnDelivery(actor, deliveryId);
     const from = [DeliveryStatus.PickedUp, DeliveryStatus.InTransit];
     if (!from.includes(delivery.status)) {
       throw DomainError.conflict(`cannot drop off a delivery in status ${delivery.status}`);
     }
+    await this.checkHandoverCode(delivery, code);
     await this.advanceOrder(delivery, ORDER_DELIVERED, actor.userId, requestId, 'order cannot be marked delivered');
     return this.applyTransition(delivery, actor, from, DeliveryStatus.Delivered, { deliveredAt: new Date() });
+  }
+
+  /** The customer rates a delivered delivery, once. */
+  async rate(actor: Actor, deliveryId: string, rating: number, comment = ''): Promise<DeliveryDocument> {
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      throw DomainError.validation('rating must be an integer from 1 to 5');
+    }
+    const delivery = await this.getOrThrow(deliveryId);
+    if (delivery.customerId !== actor.userId) {
+      throw DomainError.forbidden('only the customer can rate this delivery');
+    }
+    const rated = await this.repo.rate(String(delivery._id), actor.userId, rating, comment.trim().slice(0, 500), new Date());
+    if (!rated) {
+      throw DomainError.conflict('only a delivered delivery can be rated, once');
+    }
+    return rated;
+  }
+
+  /** Average rating of a courier, shown in their earnings screen. */
+  ratingOf(courierId: string) {
+    return this.repo.ratingOf(courierId);
   }
 
   // ── Reads ─────────────────────────────────────────────────
@@ -216,9 +247,12 @@ export class DeliveryService {
       throw DomainError.forbidden('you are not allowed to view this delivery');
     }
     const last = await this.repo.lastPosition(String(delivery._id));
+    // The handover code is the customer's to give: never shown to the courier.
+    const handoverCode = delivery.customerId === actor.userId ? await this.repo.handoverCodeOf(String(delivery._id)) : undefined;
     return {
       delivery,
       lastPosition: last ? { lat: last.lat, lng: last.lng, timestamp: last.timestamp } : null,
+      ...(handoverCode ? { handoverCode } : {}),
     };
   }
 
@@ -295,6 +329,18 @@ export class DeliveryService {
   }
 
   // ── Helpers ───────────────────────────────────────────────
+
+  private async checkHandoverCode(delivery: DeliveryDocument, code?: string): Promise<void> {
+    const expected = await this.repo.handoverCodeOf(String(delivery._id));
+    if (!expected) return; // deliveries created before handover codes existed
+    if ((delivery.handoverAttempts ?? 0) >= MAX_HANDOVER_ATTEMPTS) {
+      throw DomainError.forbidden('too many wrong codes: contact support to close this delivery');
+    }
+    if (code?.trim() !== expected) {
+      const attempts = await this.repo.recordHandoverAttempt(String(delivery._id));
+      throw DomainError.validation(`wrong handover code (${MAX_HANDOVER_ATTEMPTS - attempts} attempt(s) left)`);
+    }
+  }
 
   private async advanceOrder(
     delivery: DeliveryDocument,

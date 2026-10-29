@@ -84,4 +84,25 @@ describeIfMongo('MongooseDeliveryRepository (MongoDB)', () => {
 
     expect(await repo.earningsOf('liv-sum')).toEqual({ storedCents: 650, completedTrips: 1 });
   });
+
+  it('hides the handover code from ordinary reads and rates once', async () => {
+    const d = await repo.create({
+      orderId: 'order-code',
+      customerId: 'c1',
+      restaurantId: 'r1',
+      status: DeliveryStatus.Delivered,
+      livreurId: 'liv-rate',
+      pickup: { address: 'resto', lat: 48.85, lng: 2.35 },
+      dropoff: { address: 'client', lat: 48.86, lng: 2.36 },
+      handoverCode: '0420',
+    });
+
+    expect((await repo.findById(String(d._id)))?.handoverCode).toBeUndefined();
+    expect(await repo.handoverCodeOf(String(d._id))).toBe('0420');
+
+    expect(await repo.rate(String(d._id), 'someone-else', 5, '', new Date())).toBeNull();
+    expect((await repo.rate(String(d._id), 'c1', 4, 'ok', new Date()))?.rating).toBe(4);
+    expect(await repo.rate(String(d._id), 'c1', 1, '', new Date())).toBeNull();
+    expect(await repo.ratingOf('liv-rate')).toEqual({ average: 4, count: 1 });
+  });
 });
