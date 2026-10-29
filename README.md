@@ -51,17 +51,33 @@ repository est injecté par interface, ce qui permet de tester sans MongoDB.
 ## Fonctionnalités
 
 ### Cycle d'une livraison
-- **Synchronisation depuis `order-service`** : quand un livreur consulte les
-  courses disponibles, les commandes prêtes (`READY_FOR_PICKUP`) sans livraison
-  en génèrent une automatiquement, avec points de retrait et de dépôt
-- **Accepter une course** — la commande passe alors en `IN_DELIVERY` côté
-  `order-service`
-- **Marquer la récupération** au restaurant
-- **Marquer la livraison** (horodatée) — la commande passe en `DELIVERED`
-- **Consulter une livraison** avec sa **dernière position connue**
+- **Création sur événement** `order.ready_for_pickup` (RabbitMQ) : retrait =
+  adresse et position **réelles** du restaurant (`franchise-service`, en cache),
+  dépôt = position **géocodée** de la commande ; une estimation est signalée
+  (`locationApproximate`). Les commandes à emporter (`PICKUP`) n'en ont pas.
+- **Filet de sécurité** : un job de réconciliation (une seule instance, bail
+  Mongo) crée les livraisons dont l'événement aurait été perdu — les livreurs
+  ne déclenchent plus de synchronisation à chaque rafraîchissement.
+- **Courses disponibles** sans donnée client (zone de dépôt arrondie,
+  distance, rémunération, pourboire), triées par proximité avec
+  `?lat=&lng=&radiusKm=` (index 2dsphere).
+- **Accepter une course** : écriture conditionnelle (un seul gagnant) puis
+  assignation côté `order-service` (API interne), annulée si elle échoue. La
+  commande n'avance pas : le livreur peut partir pendant la préparation.
+- **Libérer une course** avant le retrait.
+- **Retrait** : la commande passe d'abord en `IN_DELIVERY` (refusé tant que la
+  cuisine n'a pas marqué `READY_FOR_PICKUP`), puis la livraison.
+- **Remise** : le livreur saisit le **code à 4 chiffres** que seul le client
+  voit (preuve de livraison, blocage après 5 erreurs).
+- **Annulation** : `order.cancelled` annule la livraison et prévient le
+  livreur (`delivery:cancelled`).
+- **Notation** par le client (1 à 5) ; moyenne visible par le livreur.
+- **Gains** : sommes calculées en base, pourboires inclus ; IBAN chiffrés
+  (AES-256-GCM).
 
 ```
 UNASSIGNED → ASSIGNED → PICKED_UP → IN_TRANSIT → DELIVERED
+     ↑___________| (release)          (order.cancelled → CANCELLED)
 ```
 
 ### Suivi temps réel (WebSocket, namespace `/tracking`)
@@ -79,8 +95,12 @@ socket.on('position:broadcast', (pos) => { /* { lat, lng, timestamp, status } */
 
 - La première position reçue fait passer la livraison en `IN_TRANSIT`
 - Historique des positions **purgé automatiquement après 24 h** (index TTL Mongo)
-- **ETA** calculée à vol d'oiseau (20 km/h en ville) — pas d'API de cartographie
-  payante pour ce POC
+- **ETA** calculée à vol d'oiseau (20 km/h en ville)
+- Positions enregistrées au plus toutes les 3 s (le flux temps réel reçoit tout)
+- Avec `REDIS_URL`, les salles Socket.IO sont partagées entre réplicas
+  (adapter Redis, transport WebSocket uniquement)
+- Nouvelles courses poussées (Expo, lots de 100) aux livreurs disponibles à
+  moins de `PUSH_RADIUS_KM` du restaurant
 
 ### Cloisonnement
 - Seul le **livreur assigné** peut marquer la récupération, la livraison ou
@@ -95,11 +115,14 @@ socket.on('position:broadcast', (pos) => { /* { lat, lng, timestamp, status } */
 
 | Méthode | Route | Accès |
 |---|---|---|
-| GET | `/api/deliveries/available` | `livreur`, `admin` |
+| GET | `/api/deliveries/available?lat=&lng=&radiusKm=` | `livreur`, `admin` |
 | POST | `/api/deliveries/{id}/accept` | `livreur` |
+| POST | `/api/deliveries/{id}/release` | `livreur` assigné (avant retrait) |
 | POST | `/api/deliveries/{id}/pickup` | `livreur` assigné |
-| POST | `/api/deliveries/{id}/dropoff` | `livreur` assigné |
-| GET | `/api/deliveries/{id}` (+ dernière position) | propriétaire, franchisé, livreur, `admin` |
+| POST | `/api/deliveries/{id}/dropoff` | `livreur` assigné — `{code}` |
+| POST | `/api/deliveries/{id}/rating` | client — `{rating, comment}` |
+| GET | `/api/deliveries/{id}` (+ dernière position, code pour le client) | client, franchisé, livreur assigné, `admin` |
+| PUT | `/api/courier-profile/location` | `livreur` — `{lat, lng}` |
 | WS | `/tracking` | `livreur` (émission), client/franchisé/`admin` (écoute) |
 | GET | `/healthz`, `/readyz` | public (sondes) |
 
