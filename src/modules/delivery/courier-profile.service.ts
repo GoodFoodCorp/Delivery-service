@@ -8,6 +8,10 @@ import {
 } from './entities/courier-profile.schema';
 import { isValidIban, normalizeIban } from './iban';
 
+/** A position older than this is not used to target couriers. */
+const LOCATION_FRESHNESS_MS = 30 * 60 * 1000;
+const EARTH_RADIUS_KM = 6378.1;
+
 export interface CourierProfileInput {
   vehicleType: CourierVehicleType;
   siret: string;
@@ -95,13 +99,47 @@ export class CourierProfileService {
     return { ok: true };
   }
 
-  /** Couriers who are online and can receive a push. */
-  async listPushTargets(): Promise<{ userId: string; pushToken: string }[]> {
-    const profiles = await this.profiles
-      .find({ isAvailable: true, pushToken: { $ne: null } })
-      .select('+pushToken')
-      .lean()
+  /** Records where the courier is, so new deliveries are offered to couriers nearby. */
+  async setLocation(userId: string, lat: number, lng: number) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      throw new BadRequestException('Position invalide');
+    }
+    const profile = await this.profiles
+      .findOneAndUpdate(
+        { userId },
+        { lastLocation: { type: 'Point', coordinates: [lng, lat] }, locatedAt: new Date() },
+        { new: true },
+      )
       .exec();
+    if (!profile) throw new NotFoundException('Profil livreur introuvable');
+    return { ok: true };
+  }
+
+  /**
+   * Couriers who are online and can receive a push. With a pickup point, only
+   * those seen within radiusKm of it recently — plus those whose position is
+   * unknown, so a courier never misses everything because location is off.
+   */
+  async listPushTargets(
+    near?: { lat: number; lng: number; radiusKm: number },
+  ): Promise<{ userId: string; pushToken: string }[]> {
+    const base = { isAvailable: true, pushToken: { $ne: null } };
+    const select = (filter: object) => this.profiles.find(filter).select('+pushToken').lean().exec();
+    let profiles: { userId: string; pushToken?: string | null }[];
+    if (near) {
+      const recent = new Date(Date.now() - LOCATION_FRESHNESS_MS);
+      const [nearby, unlocated] = await Promise.all([
+        select({
+          ...base,
+          locatedAt: { $gte: recent },
+          lastLocation: { $geoWithin: { $centerSphere: [[near.lng, near.lat], near.radiusKm / EARTH_RADIUS_KM] } },
+        }),
+        select({ ...base, $or: [{ locatedAt: null }, { locatedAt: { $lt: recent } }] }),
+      ]);
+      profiles = [...nearby, ...unlocated];
+    } else {
+      profiles = await select(base);
+    }
     return profiles.map((p) => ({ userId: p.userId, pushToken: p.pushToken as string }));
   }
 
