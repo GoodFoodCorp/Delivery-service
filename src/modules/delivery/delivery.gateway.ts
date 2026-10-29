@@ -10,7 +10,7 @@ import {
 import { Server, Socket } from 'socket.io';
 import { Actor, verifyToken } from '../../common/auth.util';
 import { DomainError } from '../../common/errors';
-import { DeliveryService } from './delivery.service';
+import { AvailableDeliveryView, DeliveryService } from './delivery.service';
 import { SubscribeDto } from './dto/subscribe.dto';
 import { UpdatePositionDto } from './dto/update-position.dto';
 import { DeliveryDocument } from './entities/delivery.schema';
@@ -23,13 +23,16 @@ interface AuthedSocket extends Socket {
 
 /**
  * Real-time tracking namespace. The gateway only authenticates, validates
- * and routes — every rule lives in DeliveryService.
+ * and routes — every rule lives in DeliveryService. With REDIS_URL set, rooms
+ * span every replica (Redis adapter, see main.ts).
  *
  * Client protocol:
  *  - connect to /tracking with `auth: { token }` (or Authorization header)
+ *  - couriers receive `delivery:available` (no customer data) and, in their
+ *    own room, `delivery:cancelled`
  *  - courier emits  `position:update`   { deliveryId, lat, lng }
  *  - watchers emit  `delivery:subscribe`{ deliveryId } then receive
- *    `position:broadcast` events for that delivery.
+ *    `position:broadcast` and `delivery:cancelled` for that delivery.
  */
 @WebSocketGateway({ namespace: 'tracking', cors: { origin: true, credentials: true } })
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
@@ -48,7 +51,7 @@ export class DeliveryGateway implements OnGatewayConnection {
     try {
       client.data.actor = verifyToken(token ?? '');
       if (client.data.actor.roles.includes('livreur')) {
-        void client.join(COURIERS_ROOM);
+        void client.join([COURIERS_ROOM, this.courierRoom(client.data.actor.userId)]);
       }
     } catch {
       client.emit('error', { error: 'unauthorized' });
@@ -58,9 +61,19 @@ export class DeliveryGateway implements OnGatewayConnection {
     this.logger.log(`ws connected: ${client.data.actor.userId}`);
   }
 
-  /** Pushes a newly available delivery to every connected courier. */
-  emitAvailable(delivery: DeliveryDocument): void {
-    this.server.to(COURIERS_ROOM).emit('delivery:available', delivery);
+  /** Pushes a newly available delivery to connected couriers, without customer data. */
+  emitAvailable(view: AvailableDeliveryView): void {
+    this.server.to(COURIERS_ROOM).emit('delivery:available', view);
+  }
+
+  /** Tells the courier running it, and anyone tracking it, that a delivery was cancelled. */
+  emitCancelled(delivery: DeliveryDocument): void {
+    const payload = { deliveryId: String(delivery._id), orderId: delivery.orderId };
+    const rooms = [this.room(String(delivery._id))];
+    if (delivery.livreurId) rooms.push(this.courierRoom(delivery.livreurId));
+    this.server.to(rooms).emit('delivery:cancelled', payload);
+    // An unassigned delivery disappears from every courier's list.
+    if (!delivery.livreurId) this.server.to(COURIERS_ROOM).emit('delivery:withdrawn', payload);
   }
 
   // Plain return values are delivered through the Socket.IO ack callback.
@@ -90,5 +103,9 @@ export class DeliveryGateway implements OnGatewayConnection {
 
   private room(deliveryId: string): string {
     return `delivery:${deliveryId}`;
+  }
+
+  private courierRoom(courierId: string): string {
+    return `courier:${courierId}`;
   }
 }

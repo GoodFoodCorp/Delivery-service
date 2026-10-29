@@ -14,8 +14,11 @@ const message = (overrides: Record<string, unknown> = {}) =>
 
 function setup(created: boolean) {
   const delivery = { _id: 'd1' } as unknown as DeliveryDocument;
-  const deliveries = { registerReadyOrder: jest.fn().mockResolvedValue({ delivery, created }) };
-  const notifier = { notifyNewDelivery: jest.fn().mockResolvedValue(undefined) };
+  const deliveries = {
+    registerReadyOrder: jest.fn().mockResolvedValue({ delivery, created }),
+    cancelForOrder: jest.fn().mockResolvedValue(delivery),
+  };
+  const notifier = { notifyNewDelivery: jest.fn().mockResolvedValue(undefined), notifyCancelled: jest.fn() };
   const handler = new OrderReadyHandler(deliveries as never, notifier as never);
   return { deliveries, notifier, handler, delivery };
 }
@@ -26,12 +29,9 @@ describe('OrderReadyHandler', () => {
 
     await handler.handle(message());
 
-    expect(deliveries.registerReadyOrder).toHaveBeenCalledWith({
-      id: 'o-1',
-      customer_id: 'c-1',
-      restaurant_id: 'r-1',
-      delivery_address: '1 rue A',
-    });
+    expect(deliveries.registerReadyOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'o-1', customer_id: 'c-1', restaurant_id: 'r-1', delivery_address: '1 rue A' }),
+    );
     expect(notifier.notifyNewDelivery).toHaveBeenCalledWith(delivery);
   });
 
@@ -55,5 +55,15 @@ describe('OrderReadyHandler', () => {
     notifier.notifyNewDelivery.mockRejectedValue(new Error('push down'));
 
     await expect(handler.handle(message())).resolves.toBeUndefined();
+  });
+
+  it('cancels the delivery of a cancelled order and tells its courier', async () => {
+    const { deliveries, notifier, handler, delivery } = setup(true);
+
+    await handler.handle(Buffer.from(JSON.stringify({ type: 'order.cancelled', data: { orderId: 'o-1' } })));
+
+    expect(deliveries.cancelForOrder).toHaveBeenCalledWith('o-1');
+    expect(notifier.notifyCancelled).toHaveBeenCalledWith(delivery);
+    expect(deliveries.registerReadyOrder).not.toHaveBeenCalled();
   });
 });

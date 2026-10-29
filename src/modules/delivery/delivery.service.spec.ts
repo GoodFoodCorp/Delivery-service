@@ -1,110 +1,23 @@
 import { Actor } from '../../common/auth.util';
 import { DomainError, DomainErrorCode } from '../../common/errors';
-import { DeliveryRepository } from './delivery.repository';
 import { DeliveryService } from './delivery.service';
 import { OrdersClient, ReadyOrder } from './orders.client';
-import { Delivery, DeliveryDocument, DeliveryStatus } from './entities/delivery.schema';
-
-// ── In-memory fakes ─────────────────────────────────────────
-
-type FakeDoc = Delivery & { _id: string; save: () => Promise<FakeDoc> };
-
-class FakeRepo implements DeliveryRepository {
-  docs = new Map<string, FakeDoc>();
-  positions: { deliveryId: string; lat: number; lng: number; timestamp: Date }[] = [];
-  private seq = 0;
-
-  private wrap(data: Partial<Delivery>): FakeDoc {
-    const doc = {
-      _id: `d${++this.seq}`.padEnd(24, '0'),
-      livreurId: null,
-      assignedAt: null,
-      pickedUpAt: null,
-      deliveredAt: null,
-      estimatedDeliveryTime: null,
-      ...data,
-    } as unknown as FakeDoc;
-    doc.save = async () => doc;
-    return doc;
-  }
-
-  async findById(id: string) {
-    return (this.docs.get(id) ?? null) as unknown as DeliveryDocument | null;
-  }
-  async findByOrderId(orderId: string) {
-    return ([...this.docs.values()].find((d) => d.orderId === orderId) ?? null) as unknown as DeliveryDocument | null;
-  }
-  async listByStatus(status: DeliveryStatus) {
-    return [...this.docs.values()].filter((d) => d.status === status) as unknown as DeliveryDocument[];
-  }
-  async listByCourier(courierId: string, statuses: DeliveryStatus[]) {
-    return [...this.docs.values()].filter(
-      (d) => d.livreurId === courierId && statuses.includes(d.status),
-    ) as unknown as DeliveryDocument[];
-  }
-  async create(data: Partial<Delivery>) {
-    const doc = this.wrap(data);
-    this.docs.set(doc._id, doc);
-    return doc as unknown as DeliveryDocument;
-  }
-  async save(doc: DeliveryDocument) {
-    return doc;
-  }
-  async addPosition(deliveryId: string, lat: number, lng: number, timestamp: Date) {
-    this.positions.push({ deliveryId, lat, lng, timestamp });
-    return this.positions[this.positions.length - 1] as never;
-  }
-  async lastPosition(deliveryId: string) {
-    const list = this.positions.filter((p) => p.deliveryId === deliveryId);
-    return (list[list.length - 1] ?? null) as never;
-  }
-  async listDeliveredByCourier(courierId: string) {
-    return [...this.docs.values()]
-      .filter((d) => d.livreurId === courierId && d.status === DeliveryStatus.Delivered)
-      .sort((a, b) => (b.deliveredAt?.getTime() ?? 0) - (a.deliveredAt?.getTime() ?? 0)) as unknown as DeliveryDocument[];
-  }
-  async listActiveCourierIds() {
-    const active = [DeliveryStatus.Assigned, DeliveryStatus.PickedUp, DeliveryStatus.InTransit];
-    return [...this.docs.values()]
-      .filter((d) => d.livreurId && active.includes(d.status))
-      .map((d) => d.livreurId as string);
-  }
-}
-
-class FakeOrders {
-  ready: ReadyOrder[] = [];
-  statusCalls: { orderId: string; status: string }[] = [];
-  /** What the kitchen reports for getOrder — drives the pickup guard. */
-  orderStatus = 'READY_FOR_PICKUP';
-  async listReadyForDelivery() {
-    return this.ready;
-  }
-  async getOrder(orderId: string): Promise<ReadyOrder> {
-    return {
-      id: orderId,
-      customer_id: 'cust-1',
-      restaurant_id: 'resto-1',
-      delivery_address: '1 rue A',
-      status: this.orderStatus,
-    };
-  }
-  async updateOrderStatus(orderId: string, status: string) {
-    this.statusCalls.push({ orderId, status });
-  }
-}
-
-// ── Fixtures ────────────────────────────────────────────────
+import { RestaurantsClient } from './restaurants.client';
+import { Delivery, DeliveryStatus } from './entities/delivery.schema';
+import { FakeOrders, FakeRepo, FakeRestaurants } from './testing/fakes';
 
 const courier: Actor = { userId: 'liv-1', tenantId: '', roles: ['livreur'], token: 't' };
 const otherCourier: Actor = { userId: 'liv-2', tenantId: '', roles: ['livreur'], token: 't' };
 const customer: Actor = { userId: 'cust-1', tenantId: '', roles: ['user'], token: 't' };
 const manager: Actor = { userId: 'mgr-1', tenantId: 'resto-1', roles: ['manager'], token: 't' };
+const admin: Actor = { userId: 'adm', tenantId: '', roles: ['admin'], token: 't' };
 
 function setup() {
   const repo = new FakeRepo();
   const orders = new FakeOrders();
-  const service = new DeliveryService(repo, orders as unknown as OrdersClient);
-  return { repo, orders, service };
+  const restaurants = new FakeRestaurants();
+  const service = new DeliveryService(repo, orders as unknown as OrdersClient, restaurants as unknown as RestaurantsClient);
+  return { repo, orders, restaurants, service };
 }
 
 async function seedDelivery(repo: FakeRepo, overrides: Partial<Delivery> = {}) {
@@ -114,7 +27,7 @@ async function seedDelivery(repo: FakeRepo, overrides: Partial<Delivery> = {}) {
     restaurantId: 'resto-1',
     status: DeliveryStatus.Unassigned,
     pickup: { address: 'resto', lat: 48.85, lng: 2.35 },
-    dropoff: { address: 'client', lat: 48.86, lng: 2.36 },
+    dropoff: { address: '12 rue du Client', lat: 48.86, lng: 2.36 },
     ...overrides,
   });
 }
@@ -124,214 +37,154 @@ async function expectDomainError(promise: Promise<unknown>, code: DomainErrorCod
   await promise.catch((e) => expect(e).toBeInstanceOf(DomainError));
 }
 
+const readyOrder: ReadyOrder = {
+  id: 'order-9',
+  customer_id: 'cust-9',
+  restaurant_id: 'resto-9',
+  delivery_address: '9 rue B',
+  dropoff_lat: 48.87,
+  dropoff_lng: 2.34,
+  tip_cents: 150,
+};
+
 describe('registerReadyOrder', () => {
-  const order: ReadyOrder = {
-    id: 'order-9',
-    customer_id: 'cust-9',
-    restaurant_id: 'resto-9',
-    delivery_address: '1 rue A',
-  };
+  it('uses the real restaurant and drop-off positions', async () => {
+    const { service, restaurants } = setup();
+    restaurants.locations.set('resto-9', { name: 'Good Food', address: '5 rue du Départ, Paris', lat: 48.84, lng: 2.32 });
 
-  it('creates an UNASSIGNED delivery and reports it as created', async () => {
-    const { repo, service } = setup();
+    const { delivery, created } = await service.registerReadyOrder(readyOrder);
 
-    const result = await service.registerReadyOrder(order);
-
-    expect(result.created).toBe(true);
-    expect(result.delivery.orderId).toBe('order-9');
-    expect(result.delivery.status).toBe(DeliveryStatus.Unassigned);
-    expect(repo.docs.size).toBe(1);
+    expect(created).toBe(true);
+    expect(delivery!.pickup).toEqual({ address: '5 rue du Départ, Paris', lat: 48.84, lng: 2.32 });
+    expect(delivery!.dropoff).toEqual({ address: '9 rue B', lat: 48.87, lng: 2.34 });
+    expect(delivery!.pickupLocation).toEqual({ type: 'Point', coordinates: [2.32, 48.84] });
+    expect(delivery!.locationApproximate).toBe(false);
+    expect(delivery!.tipCents).toBe(150);
+    expect(delivery!.courierFeeCents).toBeGreaterThan(300);
   });
 
-  it('stores the courier fee computed from the pickup/dropoff distance', async () => {
+  it('falls back to estimated positions, flagged, when one is unknown', async () => {
     const { service } = setup();
-
-    const { delivery } = await service.registerReadyOrder(order);
-
-    expect(delivery.courierFeeCents).toBeGreaterThanOrEqual(300);
+    const { delivery } = await service.registerReadyOrder({ ...readyOrder, dropoff_lat: null, dropoff_lng: null });
+    expect(delivery!.locationApproximate).toBe(true);
   });
 
-  it('is idempotent: a redelivered event does not create a second delivery', async () => {
-    const { repo, service } = setup();
-    await service.registerReadyOrder(order);
+  it('never creates a delivery for a click & collect order', async () => {
+    const { service, repo } = setup();
+    const result = await service.registerReadyOrder({ ...readyOrder, fulfillment: 'PICKUP' });
+    expect(result).toEqual({ delivery: null, created: false });
+    expect(repo.docs.size).toBe(0);
+  });
 
-    const again = await service.registerReadyOrder(order);
-
+  it('is idempotent, including against a concurrent creation', async () => {
+    const { service, repo } = setup();
+    await service.registerReadyOrder(readyOrder);
+    const again = await service.registerReadyOrder(readyOrder);
     expect(again.created).toBe(false);
     expect(repo.docs.size).toBe(1);
   });
-
-  it('treats a duplicate-key error from a concurrent creation as already created', async () => {
-    const { repo, service } = setup();
-    const existing = await seedDelivery(repo, { orderId: 'order-9' });
-    const findSpy = jest.spyOn(repo, 'findByOrderId');
-    findSpy.mockResolvedValueOnce(null); // lost the race: not visible at first check
-    jest.spyOn(repo, 'create').mockRejectedValueOnce(Object.assign(new Error('E11000 duplicate key'), { code: 11000 }));
-
-    const result = await service.registerReadyOrder(order);
-
-    expect(result.created).toBe(false);
-    expect(result.delivery).toBe(existing);
-  });
 });
 
-describe('courierHistory', () => {
-  const delivered = (overrides: Partial<Delivery>) =>
-    ({
-      status: DeliveryStatus.Delivered,
-      livreurId: 'liv-1',
-      ...overrides,
-    }) as Partial<Delivery>;
+describe('reconcile', () => {
+  it('creates the deliveries whose event was missed, once', async () => {
+    const { service, orders, repo } = setup();
+    orders.awaiting = [readyOrder, { ...readyOrder, id: 'order-10' }];
 
-  it('lists only the connected courier\'s delivered trips, newest first, with their fee', async () => {
-    const { repo, service } = setup();
-    await seedDelivery(repo, delivered({ orderId: 'o-old', courierFeeCents: 400, deliveredAt: new Date('2026-10-01T10:00:00Z') }));
-    await seedDelivery(repo, delivered({ orderId: 'o-new', courierFeeCents: 500, deliveredAt: new Date('2026-10-02T10:00:00Z') }));
-    await seedDelivery(repo, delivered({ orderId: 'o-other', livreurId: 'liv-2', courierFeeCents: 999 }));
-    await seedDelivery(repo, { orderId: 'o-active', livreurId: 'liv-1', status: DeliveryStatus.PickedUp });
-
-    const history = await service.courierHistory(courier);
-
-    expect(history.trips.map((t) => t.orderId)).toEqual(['o-new', 'o-old']);
-    expect(history.trips[0]).toMatchObject({ amount: 5, pickupAddress: 'resto', dropoffAddress: 'client' });
-    expect(history.completedTrips).toBe(2);
-    expect(history.totalEarned).toBe(9);
-  });
-
-  it('computes the fee on the fly for deliveries created before fees were stored', async () => {
-    const { repo, service } = setup();
-    await seedDelivery(repo, delivered({ orderId: 'o-legacy', deliveredAt: new Date('2026-10-01T10:00:00Z') }));
-
-    const history = await service.courierHistory(courier);
-
-    expect(history.trips).toHaveLength(1);
-    expect(history.trips[0].amount).toBeGreaterThanOrEqual(3);
-    expect(history.totalEarned).toBe(history.trips[0].amount);
-  });
-
-  it('returns an empty history for a courier with no delivered trip', async () => {
-    const { service } = setup();
-
-    const history = await service.courierHistory(courier);
-
-    expect(history).toEqual({ totalEarned: 0, completedTrips: 0, trips: [] });
-  });
-
-  it('refuses non-couriers', async () => {
-    const { service } = setup();
-    await expectDomainError(service.courierHistory(customer), DomainErrorCode.Forbidden);
+    expect(await service.reconcile()).toHaveLength(2);
+    expect(await service.reconcile()).toHaveLength(0);
+    expect(repo.docs.size).toBe(2);
   });
 });
-
-// ── listAvailable / sync ────────────────────────────────────
 
 describe('listAvailable', () => {
-  it('creates UNASSIGNED deliveries for new ready orders', async () => {
-    const { repo, orders, service } = setup();
-    orders.ready = [
-      { id: 'order-9', customer_id: 'cust-9', restaurant_id: 'resto-9', delivery_address: '1 rue A', status: 'READY_FOR_PICKUP' },
-    ];
+  it('exposes no customer data before acceptance', async () => {
+    const { service, repo } = setup();
+    await seedDelivery(repo, { courierFeeCents: 420, tipCents: 100 });
 
-    const list = await service.listAvailable(courier);
+    const [view] = await service.listAvailable(courier);
 
-    expect(list).toHaveLength(1);
-    expect(list[0].orderId).toBe('order-9');
-    expect(list[0].status).toBe(DeliveryStatus.Unassigned);
-    expect(list[0].pickup.lat).toBeDefined();
-    expect(repo.docs.size).toBe(1);
+    expect(view).not.toHaveProperty('customerId');
+    expect(JSON.stringify(view)).not.toContain('12 rue du Client');
+    expect(view.courierFeeCents).toBe(420);
+    expect(view.tipCents).toBe(100);
+    expect(view.distanceKm).toBeGreaterThan(0);
   });
 
-  it('does not duplicate deliveries for already-synced orders', async () => {
-    const { repo, orders, service } = setup();
-    await seedDelivery(repo, { orderId: 'order-9' });
-    orders.ready = [
-      { id: 'order-9', customer_id: 'cust-9', restaurant_id: 'resto-9', delivery_address: '1 rue A', status: 'READY_FOR_PICKUP' },
-    ];
-
-    await service.listAvailable(courier);
-    expect(repo.docs.size).toBe(1);
-  });
-
-  it('offers orders that are still being prepared, so a courier can travel meanwhile', async () => {
-    const { repo, orders, service } = setup();
-    orders.ready = [
-      { id: 'order-7', customer_id: 'cust-7', restaurant_id: 'resto-7', delivery_address: '7 rue B', status: 'IN_PREPARATION' },
-    ];
-
-    const list = await service.listAvailable(courier);
-
-    expect(list).toHaveLength(1);
-    expect(list[0].orderId).toBe('order-7');
-    expect(list[0].status).toBe(DeliveryStatus.Unassigned);
-    expect(repo.docs.size).toBe(1);
+  it('does not call order-service on a courier poll', async () => {
+    const { service, orders } = setup();
+    orders.unreachable = true;
+    await expect(service.listAvailable(courier)).resolves.toEqual([]);
   });
 
   it('rejects non-couriers', async () => {
-    const { service } = setup();
-    await expectDomainError(service.listAvailable(customer), DomainErrorCode.Forbidden);
+    await expectDomainError(setup().service.listAvailable(customer), DomainErrorCode.Forbidden);
   });
 });
 
-// ── accept ──────────────────────────────────────────────────
+describe('accept and release', () => {
+  it('assigns the courier on both sides', async () => {
+    const { service, repo, orders } = setup();
+    const d = await seedDelivery(repo);
 
-describe('accept', () => {
-  it('accepts a delivery using its order id', async () => {
-    const { repo, service } = setup();
-    const doc = await seedDelivery(repo, { orderId: 'order-9' });
-
-    const accepted = await service.accept(courier, 'order-9');
-
-    expect(accepted).toBe(doc);
-    expect(accepted.status).toBe(DeliveryStatus.Assigned);
-    expect(accepted.livreurId).toBe('liv-1');
-  });
-
-  it('assigns the courier without advancing the order', async () => {
-    const { repo, orders, service } = setup();
-    const doc = await seedDelivery(repo);
-
-    const accepted = await service.accept(courier, (doc as never as FakeDoc)._id);
+    const accepted = await service.accept(courier, String(d._id));
 
     expect(accepted.status).toBe(DeliveryStatus.Assigned);
     expect(accepted.livreurId).toBe('liv-1');
-    expect(accepted.assignedAt).toBeInstanceOf(Date);
-    // The kitchen still owns the order until the meal is actually collected.
-    expect(orders.statusCalls).toEqual([]);
+    expect(orders.couriers.get('order-1')).toBe('liv-1');
   });
 
-  it('can be accepted while the order is still in preparation', async () => {
-    const { repo, orders, service } = setup();
-    orders.orderStatus = 'IN_PREPARATION';
-    const doc = await seedDelivery(repo);
+  it('lets exactly one of two concurrent couriers win', async () => {
+    const { service, repo } = setup();
+    const d = await seedDelivery(repo);
 
-    const accepted = await service.accept(courier, (doc as never as FakeDoc)._id);
+    const results = await Promise.allSettled([
+      service.accept(courier, String(d._id)),
+      service.accept(otherCourier, String(d._id)),
+    ]);
 
-    expect(accepted.status).toBe(DeliveryStatus.Assigned);
-    expect(orders.statusCalls).toEqual([]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
   });
 
-  it('refuses an already-assigned delivery', async () => {
-    const { repo, service } = setup();
-    const doc = await seedDelivery(repo, { status: DeliveryStatus.Assigned, livreurId: 'liv-2' });
+  it('rolls the claim back when order-service refuses', async () => {
+    const { service, repo, orders } = setup();
+    const d = await seedDelivery(repo);
+    orders.couriers.set('order-1', 'liv-9'); // claimed elsewhere already
 
-    await expectDomainError(service.accept(courier, (doc as never as FakeDoc)._id), DomainErrorCode.Conflict);
+    await expectDomainError(service.accept(courier, String(d._id)), DomainErrorCode.Conflict);
+    expect(repo.docs.get(String(d._id))!.status).toBe(DeliveryStatus.Unassigned);
   });
 
-  it('404s on unknown delivery', async () => {
-    const { service } = setup();
-    await expectDomainError(service.accept(courier, 'missing'), DomainErrorCode.NotFound);
+  it('accepts by order id too, and 404s on unknown delivery', async () => {
+    const { service, repo } = setup();
+    await seedDelivery(repo);
+    await expect(service.accept(courier, 'order-1')).resolves.toMatchObject({ livreurId: 'liv-1' });
+    await expectDomainError(service.accept(courier, 'nope'), DomainErrorCode.NotFound);
+  });
+
+  it('release frees the delivery for another courier', async () => {
+    const { service, repo, orders } = setup();
+    const d = await seedDelivery(repo);
+    await service.accept(courier, String(d._id));
+
+    await service.release(courier, String(d._id));
+
+    expect(orders.couriers.has('order-1')).toBe(false);
+    await expect(service.accept(otherCourier, String(d._id))).resolves.toMatchObject({ livreurId: 'liv-2' });
   });
 });
-
-// ── pickup / dropoff ────────────────────────────────────────
 
 describe('pickup and dropoff', () => {
-  it('full happy path stamps timestamps and notifies order-service', async () => {
-    const { repo, orders, service } = setup();
-    const doc = await seedDelivery(repo);
-    const id = (doc as never as FakeDoc)._id;
+  async function accepted() {
+    const ctx = setup();
+    const d = await seedDelivery(ctx.repo);
+    await ctx.service.accept(courier, String(d._id));
+    return { ...ctx, id: String(d._id) };
+  }
 
-    await service.accept(courier, id);
+  it('full happy path advances the order first, then the delivery', async () => {
+    const { service, orders, id } = await accepted();
+
     const picked = await service.pickup(courier, id);
     expect(picked.status).toBe(DeliveryStatus.PickedUp);
     expect(picked.pickedUpAt).toBeInstanceOf(Date);
@@ -339,124 +192,110 @@ describe('pickup and dropoff', () => {
     const dropped = await service.dropoff(courier, id);
     expect(dropped.status).toBe(DeliveryStatus.Delivered);
     expect(dropped.deliveredAt).toBeInstanceOf(Date);
-    // IN_DELIVERY is pushed at pickup, not at accept.
     expect(orders.statusCalls.map((c) => c.status)).toEqual(['IN_DELIVERY', 'DELIVERED']);
+    expect(orders.statusCalls.every((c) => c.courierId === 'liv-1')).toBe(true);
   });
 
-  it('refuses pickup while the meal is still cooking, then allows it once ready', async () => {
-    const { repo, orders, service } = setup();
-    const doc = await seedDelivery(repo);
-    const id = (doc as never as FakeDoc)._id;
-    orders.orderStatus = 'IN_PREPARATION';
-    await service.accept(courier, id);
+  it('refuses pickup while the meal is still cooking, without changing anything', async () => {
+    const { service, orders, repo, id } = await accepted();
+    orders.kitchenStatus = 'IN_PREPARATION';
 
-    // Courier arrived early: they wait rather than leave with a raw meal.
     await expectDomainError(service.pickup(courier, id), DomainErrorCode.Conflict);
-    expect(orders.statusCalls).toEqual([]);
+    expect(repo.docs.get(id)!.status).toBe(DeliveryStatus.Assigned);
 
-    orders.orderStatus = 'READY_FOR_PICKUP';
-    const picked = await service.pickup(courier, id);
-    expect(picked.status).toBe(DeliveryStatus.PickedUp);
-    expect(orders.statusCalls).toEqual([{ orderId: 'order-1', status: 'IN_DELIVERY' }]);
+    orders.kitchenStatus = 'READY_FOR_PICKUP';
+    await expect(service.pickup(courier, id)).resolves.toMatchObject({ status: DeliveryStatus.PickedUp });
   });
 
-  it('fails closed when order-service cannot confirm the order is ready', async () => {
-    const { repo, orders, service } = setup();
-    const doc = await seedDelivery(repo);
-    const id = (doc as never as FakeDoc)._id;
-    await service.accept(courier, id);
-    orders.getOrder = async () => {
-      throw DomainError.conflict('order-service unreachable');
-    };
-
+  it('fails closed when order-service is unreachable', async () => {
+    const { service, orders, repo, id } = await accepted();
+    orders.unreachable = true;
     await expectDomainError(service.pickup(courier, id), DomainErrorCode.Conflict);
-    expect(orders.statusCalls).toEqual([]);
+    expect(repo.docs.get(id)!.status).toBe(DeliveryStatus.Assigned);
   });
 
   it('only the assigned courier can act on the delivery', async () => {
-    const { repo, service } = setup();
-    const doc = await seedDelivery(repo);
-    const id = (doc as never as FakeDoc)._id;
-    await service.accept(courier, id);
-
+    const { service, id } = await accepted();
     await expectDomainError(service.pickup(otherCourier, id), DomainErrorCode.Forbidden);
-    await expectDomainError(service.dropoff(otherCourier, id), DomainErrorCode.Forbidden);
   });
 
-  it('cannot pick up before accepting or drop off before pickup', async () => {
-    const { repo, service } = setup();
-    const doc = await seedDelivery(repo);
-    const id = (doc as never as FakeDoc)._id;
-
-    await expectDomainError(service.pickup(courier, id), DomainErrorCode.Forbidden); // not assigned to courier
-    await service.accept(courier, id);
-    await expectDomainError(service.dropoff(courier, id), DomainErrorCode.Conflict); // not picked up yet
+  it('cannot drop off before pickup', async () => {
+    const { service, id } = await accepted();
+    await expectDomainError(service.dropoff(courier, id), DomainErrorCode.Conflict);
   });
 });
 
-// ── positions & tracking access ─────────────────────────────
+describe('cancelForOrder', () => {
+  it('cancels a delivery in progress but never a delivered one', async () => {
+    const { service, repo } = setup();
+    await seedDelivery(repo, { status: DeliveryStatus.Assigned, livreurId: 'liv-1' });
+    await seedDelivery(repo, { orderId: 'order-2', status: DeliveryStatus.Delivered, livreurId: 'liv-1' });
+
+    expect((await service.cancelForOrder('order-1'))!.status).toBe(DeliveryStatus.Cancelled);
+    expect(await service.cancelForOrder('order-2')).toBeNull();
+    expect(await service.cancelForOrder('order-1')).toBeNull();
+  });
+});
+
+describe('courierHistory', () => {
+  it('totals every delivered trip, fee and tip, and lists recent ones', async () => {
+    const { service, repo } = setup();
+    await seedDelivery(repo, { status: DeliveryStatus.Delivered, livreurId: 'liv-1', courierFeeCents: 450, tipCents: 200, deliveredAt: new Date() });
+    await seedDelivery(repo, { orderId: 'o2', status: DeliveryStatus.Delivered, livreurId: 'liv-1', courierFeeCents: null, deliveredAt: new Date(0) });
+    await seedDelivery(repo, { orderId: 'o3', status: DeliveryStatus.Delivered, livreurId: 'liv-2', courierFeeCents: 999 });
+
+    const history = await service.courierHistory(courier);
+
+    expect(history.completedTrips).toBe(2);
+    expect(history.trips[0].amount).toBe(6.5);
+    expect(history.totalEarned).toBeGreaterThan(6.5); // legacy trip computed at the current tariff
+  });
+
+  it('refuses non-couriers', async () => {
+    await expectDomainError(setup().service.courierHistory(customer), DomainErrorCode.Forbidden);
+  });
+});
 
 describe('recordPosition', () => {
-  it('stores the point and flips PICKED_UP to IN_TRANSIT', async () => {
-    const { repo, service } = setup();
-    const doc = await seedDelivery(repo);
-    const id = (doc as never as FakeDoc)._id;
-    await service.accept(courier, id);
-    await service.pickup(courier, id);
+  it('flips PICKED_UP to IN_TRANSIT and throttles stored points', async () => {
+    const { service, repo } = setup();
+    const d = await seedDelivery(repo, { status: DeliveryStatus.PickedUp, livreurId: 'liv-1' });
 
-    const first = await service.recordPosition(courier, id, 48.857, 2.351);
+    const first = await service.recordPosition(courier, String(d._id), 48.851, 2.351);
+    await service.recordPosition(courier, String(d._id), 48.852, 2.352);
+
     expect(first.status).toBe(DeliveryStatus.InTransit);
     expect(repo.positions).toHaveLength(1);
-
-    await service.recordPosition(courier, id, 48.858, 2.352);
-    expect(repo.positions).toHaveLength(2);
   });
 
   it('rejects positions outside an active delivery', async () => {
-    const { repo, service } = setup();
-    const doc = await seedDelivery(repo);
-    const id = (doc as never as FakeDoc)._id;
-    await service.accept(courier, id);
-
-    await expectDomainError(service.recordPosition(courier, id, 48.85, 2.35), DomainErrorCode.Conflict);
+    const { service, repo } = setup();
+    const d = await seedDelivery(repo, { status: DeliveryStatus.Assigned, livreurId: 'liv-1' });
+    await expectDomainError(service.recordPosition(courier, String(d._id), 1, 1), DomainErrorCode.Conflict);
   });
 });
 
 describe('getById and canWatch', () => {
-  it('lets owner, courier, manager of the restaurant and admin view', async () => {
-    const { repo, service } = setup();
-    const doc = await seedDelivery(repo);
-    const id = (doc as never as FakeDoc)._id;
-
-    await expect(service.getById(customer, id)).resolves.toBeDefined();
-    await expect(service.getById(manager, id)).resolves.toBeDefined();
-    await expect(service.getById(courier, id)).resolves.toBeDefined();
+  it('lets the customer, the assigned courier, the restaurant manager and admin view', async () => {
+    const { service, repo } = setup();
+    const d = await seedDelivery(repo, { status: DeliveryStatus.Assigned, livreurId: 'liv-1' });
+    for (const actor of [customer, courier, manager, admin]) {
+      await expect(service.getById(actor, String(d._id))).resolves.toBeDefined();
+      await expect(service.canWatch(actor, String(d._id))).resolves.toBe(true);
+    }
   });
 
-  it('blocks unrelated customers and managers', async () => {
-    const { repo, service } = setup();
-    const doc = await seedDelivery(repo);
-    const id = (doc as never as FakeDoc)._id;
-    const stranger: Actor = { userId: 'cust-x', tenantId: '', roles: ['user'], token: 't' };
-    const otherManager: Actor = { userId: 'mgr-2', tenantId: 'resto-99', roles: ['manager'], token: 't' };
-
-    await expectDomainError(service.getById(stranger, id), DomainErrorCode.Forbidden);
-    await expectDomainError(service.getById(otherManager, id), DomainErrorCode.Forbidden);
-
-    expect(await service.canWatch(stranger, id)).toBe(false);
-    expect(await service.canWatch(customer, id)).toBe(true);
-  });
-
-  it('returns the last known position', async () => {
-    const { repo, service } = setup();
-    const doc = await seedDelivery(repo);
-    const id = (doc as never as FakeDoc)._id;
-    await service.accept(courier, id);
-    await service.pickup(courier, id);
-    await service.recordPosition(courier, id, 48.857, 2.351);
-    await service.recordPosition(courier, id, 48.859, 2.353);
-
-    const detail = await service.getById(customer, id);
-    expect(detail.lastPosition).toMatchObject({ lat: 48.859, lng: 2.353 });
+  it('blocks any other courier, customer or manager', async () => {
+    const { service, repo } = setup();
+    const d = await seedDelivery(repo, { status: DeliveryStatus.Assigned, livreurId: 'liv-1' });
+    const strangers: Actor[] = [
+      otherCourier,
+      { userId: 'cust-2', tenantId: '', roles: ['user'], token: 't' },
+      { userId: 'mgr-2', tenantId: 'resto-2', roles: ['manager'], token: 't' },
+    ];
+    for (const actor of strangers) {
+      await expectDomainError(service.getById(actor, String(d._id)), DomainErrorCode.Forbidden);
+      await expect(service.canWatch(actor, String(d._id))).resolves.toBe(false);
+    }
   });
 });

@@ -1,29 +1,41 @@
 import { Request } from 'express';
 import * as jwt from 'jsonwebtoken';
 
-/** Authenticated caller extracted from the auth-service JWT (HS256 shared secret). */
+/** Authenticated caller extracted from the auth-service access token (HS256 shared secret). */
 export interface Actor {
   userId: string;
   tenantId: string;
   roles: string[];
-  /** Raw bearer token, forwarded on service-to-service calls (order-service). */
   token: string;
 }
 
 export const ROLES_KEY = 'roles';
 
+/**
+ * Verifies an access token: HS256 signature, expiry, issuer, audience and
+ * typ=access. Refresh tokens (another key, typ=refresh), unsigned tokens and
+ * tokens minted for another audience are refused.
+ */
 export function verifyToken(token: string): Actor {
   const secret = process.env.JWT_SECRET;
   if (!secret) {
     throw new Error('JWT_SECRET is not configured');
   }
-  const payload = jwt.verify(token, secret, { algorithms: ['HS256'] }) as jwt.JwtPayload;
+  const payload = jwt.verify(token, secret, {
+    algorithms: ['HS256'],
+    issuer: process.env.JWT_ISSUER ?? 'goodfood-auth',
+    audience: process.env.JWT_AUDIENCE ?? 'goodfood-api',
+    clockTolerance: 30,
+  }) as jwt.JwtPayload;
+  if (payload.typ !== 'access') {
+    throw new Error('not an access token');
+  }
+  if (!payload.sub || typeof payload.exp !== 'number') {
+    throw new Error('token has no subject or expiry');
+  }
   const roles = Array.isArray(payload.role_slugs)
     ? payload.role_slugs.map((r: string) => r.toLowerCase())
     : [];
-  if (!payload.sub) {
-    throw new Error('token has no subject');
-  }
   return {
     userId: String(payload.sub),
     tenantId: typeof payload.tenant_id === 'string' ? payload.tenant_id : '',
