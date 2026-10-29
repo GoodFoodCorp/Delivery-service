@@ -1,4 +1,4 @@
-import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Prop, Schema, SchemaFactory, raw } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 
 export enum CourierVehicleType {
@@ -46,7 +46,15 @@ export class CourierProfile {
   /** Expo push token of the courier's device. Never exposed in API responses. */
   @Prop({ type: String, default: null, select: false })
   pushToken: string | null;
+
+  /** Last position the courier app reported (GeoJSON, longitude first). */
+  @Prop(raw({ type: { type: String, enum: ['Point'] }, coordinates: { type: [Number] } }))
+  lastLocation?: { type: 'Point'; coordinates: [number, number] };
+
+  @Prop({ type: Date, default: null })
+  locatedAt: Date | null;
 }
 
 export type CourierProfileDocument = HydratedDocument<CourierProfile>;
 export const CourierProfileSchema = SchemaFactory.createForClass(CourierProfile);
+CourierProfileSchema.index({ lastLocation: '2dsphere' }, { sparse: true });

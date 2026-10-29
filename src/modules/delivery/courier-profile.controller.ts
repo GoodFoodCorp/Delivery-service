@@ -36,6 +36,12 @@ export class CourierProfileController {
     return this.profiles.setIban(actor.userId, body.iban, true);
   }
 
+  @Put('location')
+  @Roles('livreur')
+  location(@CurrentActor() actor: Actor, @Body() body: { lat: number; lng: number }) {
+    return this.profiles.setLocation(actor.userId, Number(body.lat), Number(body.lng));
+  }
+
   @Put('push-token')
   pushToken(@CurrentActor() actor: Actor, @Body() body: { pushToken: string }) {
     return this.profiles.setPushToken(actor.userId, body.pushToken);

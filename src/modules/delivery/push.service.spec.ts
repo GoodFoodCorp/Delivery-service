@@ -89,4 +89,28 @@ describe('PushService.notifyNewDelivery', () => {
 
     await expect(service.notifyNewDelivery(delivery)).resolves.toBeUndefined();
   });
+
+  it('targets couriers near the restaurant', async () => {
+    mockExpo([{ status: 'ok' }]);
+    const { profiles, service } = setup([{ userId: 'liv-1', pushToken: 'ExponentPushToken[a]' }]);
+
+    await service.notifyNewDelivery(delivery);
+
+    expect(profiles.listPushTargets).toHaveBeenCalledWith({ lat: 0, lng: 0, radiusKm: 8 });
+  });
+
+  it('sends in batches of 100', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      const batch = JSON.parse((init as RequestInit).body as string) as unknown[];
+      return { ok: true, json: async () => ({ data: batch.map(() => ({ status: 'ok' })) }) } as Response;
+    });
+    const targets = Array.from({ length: 250 }, (_, i) => ({ userId: `liv-${i}`, pushToken: `ExponentPushToken[${i}]` }));
+    const { service } = setup(targets);
+
+    await service.notifyNewDelivery(delivery);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const sizes = fetchMock.mock.calls.map((c) => (JSON.parse((c[1] as RequestInit).body as string) as unknown[]).length);
+    expect(sizes).toEqual([100, 100, 50]);
+  });
 });
