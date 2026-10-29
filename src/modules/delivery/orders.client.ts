@@ -1,84 +1,90 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { DomainError } from '../../common/errors';
 
+/** An order a courier may run, as order-service describes it. */
 export interface ReadyOrder {
   id: string;
   customer_id: string;
   restaurant_id: string;
   delivery_address: string;
-  /** Order lifecycle status, mirrored from order-service (absent on the order-ready event). */
   status?: string;
+  fulfillment?: string;
+  dropoff_lat?: number | null;
+  dropoff_lng?: number | null;
+  courier_id?: string | null;
+  tip_cents?: number;
 }
 
-/** The only order status from which a courier may collect the meal. */
-export const ORDER_READY_FOR_PICKUP = 'READY_FOR_PICKUP';
+const REQUEST_TIMEOUT_MS = 5000;
 
 /**
- * Synchronous REST client to order-service (see root README: sync
- * communication for the POC, event bus as future evolution).
- * The caller's own JWT is forwarded — no service account needed.
+ * Client of order-service's internal API (X-Service-Key). Couriers never call
+ * order-service themselves: this service decides which courier runs which
+ * delivery and acts on the order on their behalf.
  */
 @Injectable()
 export class OrdersClient {
-  private readonly logger = new Logger(OrdersClient.name);
-
   private get baseUrl(): string {
-    return process.env.ORDER_SERVICE_URL ?? 'http://order-service:8082';
+    return (process.env.ORDER_SERVICE_URL ?? 'http://order-service:8082').replace(/\/+$/, '');
   }
 
-  /** Orders a courier may claim — still IN_PREPARATION, or READY_FOR_PICKUP. */
-  async listReadyForDelivery(bearerToken: string, requestId?: string): Promise<ReadyOrder[]> {
-    const res = await fetch(`${this.baseUrl}/ready-for-delivery`, {
-      headers: this.headers(bearerToken, requestId),
-    });
-    if (!res.ok) {
-      throw DomainError.conflict(`order-service replied ${res.status} on ready-for-delivery`);
-    }
-    return (await res.json()) as ReadyOrder[];
+  /** Deliveries awaiting a courier (no pickups, no already-claimed order). */
+  listAwaitingCourier(requestId?: string): Promise<ReadyOrder[]> {
+    return this.call<ReadyOrder[]>('GET', '/internal/orders/ready-for-delivery', undefined, requestId);
   }
 
-  /**
-   * Reads one order. Unlike updateOrderStatus this one throws: it backs the
-   * pickup guard, where an unknown order status must block the pickup rather
-   * than let a courier collect a meal that may not be cooked.
-   */
-  async getOrder(orderId: string, bearerToken: string, requestId?: string): Promise<ReadyOrder> {
-    const res = await fetch(`${this.baseUrl}/${orderId}`, {
-      headers: this.headers(bearerToken, requestId),
-    });
-    if (!res.ok) {
-      throw DomainError.conflict(`order-service replied ${res.status} for order ${orderId}`);
-    }
-    return (await res.json()) as ReadyOrder;
+  getOrder(orderId: string, requestId?: string): Promise<ReadyOrder> {
+    return this.call<ReadyOrder>('GET', `/internal/orders/${encodeURIComponent(orderId)}`, undefined, requestId);
   }
 
-  /** Marks the order IN_DELIVERY / DELIVERED. Failures are logged but do not
-   *  break the delivery flow (order status can be reconciled later). */
-  async updateOrderStatus(
-    orderId: string,
-    status: string,
-    bearerToken: string,
-    requestId?: string,
-  ): Promise<void> {
+  /** Records the courier on the order; a conflict means another courier holds it. */
+  async assignCourier(orderId: string, courierId: string, requestId?: string): Promise<void> {
+    await this.call('PUT', `/internal/orders/${encodeURIComponent(orderId)}/courier`, { courier_id: courierId }, requestId);
+  }
+
+  async unassignCourier(orderId: string, courierId: string, requestId?: string): Promise<void> {
+    await this.call(
+      'DELETE',
+      `/internal/orders/${encodeURIComponent(orderId)}/courier/${encodeURIComponent(courierId)}`,
+      undefined,
+      requestId,
+    );
+  }
+
+  /** Applies IN_DELIVERY / DELIVERED with the courier rules of order-service. */
+  async updateOrderStatus(orderId: string, status: string, courierId: string, requestId?: string): Promise<void> {
+    await this.call(
+      'PATCH',
+      `/internal/orders/${encodeURIComponent(orderId)}/status`,
+      { status, courier_id: courierId },
+      requestId,
+    );
+  }
+
+  /** Maps order-service answers to domain errors; network failures are conflicts (retry later). */
+  private async call<T>(method: string, path: string, body?: unknown, requestId?: string): Promise<T> {
+    const headers: Record<string, string> = { 'X-Service-Key': process.env.SERVICE_API_KEY ?? '' };
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    if (requestId) headers['X-Request-ID'] = requestId;
+
+    let res: Response;
     try {
-      const res = await fetch(`${this.baseUrl}/${orderId}/status`, {
-        method: 'PATCH',
-        headers: { ...this.headers(bearerToken, requestId), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
+      res = await fetch(this.baseUrl + path, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
-      if (!res.ok) {
-        this.logger.warn(`order-service replied ${res.status} when setting order ${orderId} to ${status}`);
-      }
     } catch (err) {
-      this.logger.warn(`could not reach order-service for order ${orderId}: ${(err as Error).message}`);
+      throw DomainError.conflict(`order-service unreachable: ${(err as Error).message}`);
     }
-  }
-
-  private headers(bearerToken: string, requestId?: string): Record<string, string> {
-    const h: Record<string, string> = { Authorization: `Bearer ${bearerToken}` };
-    if (requestId) {
-      h['X-Request-ID'] = requestId;
-    }
-    return h;
+    if (res.status === 204) return undefined as T;
+    const payload = (await res.json().catch(() => ({}))) as { error?: string };
+    if (res.ok) return payload as T;
+    const message = payload.error ?? `order-service replied ${res.status}`;
+    if (res.status === 404) throw DomainError.notFound(message);
+    if (res.status === 403) throw DomainError.forbidden(message);
+    if (res.status === 400) throw DomainError.validation(message);
+    throw DomainError.conflict(message);
   }
 }

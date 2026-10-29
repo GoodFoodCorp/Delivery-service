@@ -5,6 +5,8 @@ import { DeliveryGateway } from './delivery.gateway';
 import { DELIVERY_REPOSITORY, MongooseDeliveryRepository } from './delivery.repository';
 import { DeliveryService } from './delivery.service';
 import { OrdersClient } from './orders.client';
+import { ReconcileJob } from './reconcile.job';
+import { RestaurantsClient } from './restaurants.client';
 import { Delivery, DeliverySchema } from './entities/delivery.schema';
 import { PositionUpdate, PositionUpdateSchema } from './entities/position-update.schema';
 import { CourierProfile, CourierProfileSchema } from './entities/courier-profile.schema';
@@ -33,6 +35,8 @@ import { OrderReadyHandler } from './messaging/order-ready.handler';
     DeliveryService,
     DeliveryGateway,
     OrdersClient,
+    RestaurantsClient,
+    ReconcileJob,
     CourierProfileService,
     AvailabilityNotifier,
     PushService,

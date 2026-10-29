@@ -4,14 +4,14 @@ import {
   ORDER_EVENTS_EXCHANGE,
   ORDER_READY_DLQ,
   ORDER_READY_QUEUE,
-  ORDER_READY_ROUTING_KEY,
+  ORDER_ROUTING_KEYS,
 } from './order-ready.event';
 import { OrderReadyHandler } from './order-ready.handler';
 
 const RECONNECT_DELAY_MS = 5000;
 
 /**
- * Consumes order.ready_for_pickup from RabbitMQ. Starts in the background so
+ * Consumes order.ready_for_pickup and order.cancelled from RabbitMQ. Starts in the background so
  * the service boots even when the broker is down, and reconnects on loss.
  * Messages that cannot be processed are rejected without requeue and land in
  * the dead-letter queue.
@@ -56,7 +56,9 @@ export class OrderReadyConsumer implements OnModuleInit, OnModuleDestroy {
         durable: true,
         arguments: { 'x-dead-letter-exchange': '', 'x-dead-letter-routing-key': ORDER_READY_DLQ },
       });
-      await channel.bindQueue(ORDER_READY_QUEUE, ORDER_EVENTS_EXCHANGE, ORDER_READY_ROUTING_KEY);
+      for (const key of ORDER_ROUTING_KEYS) {
+        await channel.bindQueue(ORDER_READY_QUEUE, ORDER_EVENTS_EXCHANGE, key);
+      }
       await channel.prefetch(10);
 
       await channel.consume(ORDER_READY_QUEUE, async (msg) => {
