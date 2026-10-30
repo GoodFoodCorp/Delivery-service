@@ -153,16 +153,6 @@ export class CourierProfileService {
     await this.profiles.updateMany({ pushToken: { $in: tokens } }, { pushToken: null }).exec();
   }
 
-  async earnings(userId: string) {
-    const profile = await this.profiles.findOne({ userId }).exec();
-    if (!profile) throw new NotFoundException('Profil livreur introuvable');
-    return {
-      availableBalance: profile.availableBalanceCents / 100,
-      totalEarned: profile.totalEarnedCents / 100,
-      completedTrips: profile.completedTrips,
-    };
-  }
-
   private toResponse(profile: CourierProfileDocument | (CourierProfile & { _id: unknown }) | null) {
     if (!profile) throw new NotFoundException('Profil livreur introuvable');
     return {
@@ -173,9 +163,6 @@ export class CourierProfileService {
       city: profile.city,
       hasBagEquipped: profile.hasBagEquipped,
       isAvailable: profile.isAvailable,
-      availableBalance: profile.availableBalanceCents / 100,
-      totalEarned: profile.totalEarnedCents / 100,
-      completedTrips: profile.completedTrips,
     };
   }
 }

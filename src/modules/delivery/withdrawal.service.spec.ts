@@ -71,6 +71,26 @@ afterEach(() => {
   delete process.env.MIN_WITHDRAWAL_CENTS;
 });
 
+// ── earnings ────────────────────────────────────────────────
+
+describe('earnings', () => {
+  it('is the delivered trips minus the payouts already requested', async () => {
+    const { repo, service } = setup({ totalEarned: 30 });
+    await repo.create({ livreurId: 'liv-1', amountCents: 1200, status: WithdrawalStatus.Paid, iban: VALID_IBAN });
+
+    await expect(service.earnings(courier)).resolves.toEqual({
+      availableBalance: 18,
+      totalEarned: 30,
+      completedTrips: 6,
+    });
+  });
+
+  it('is for couriers only', async () => {
+    const { service } = setup();
+    await expectDomainError(service.earnings(customer), DomainErrorCode.Forbidden);
+  });
+});
+
 // ── request ─────────────────────────────────────────────────
 
 describe('request', () => {
