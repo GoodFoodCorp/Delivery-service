@@ -48,9 +48,12 @@ export class DeliveryGateway implements OnGatewayConnection {
   constructor(private readonly deliveries: DeliveryService) {}
 
   handleConnection(client: AuthedSocket): void {
+    // The web app's session is an HttpOnly cookie: the browser sends it with
+    // the handshake, scripts never see it.
     const token =
       (client.handshake.auth?.token as string | undefined) ??
-      client.handshake.headers.authorization?.replace(/^Bearer /, '');
+      client.handshake.headers.authorization?.replace(/^Bearer /, '') ??
+      cookieValue(client.handshake.headers.cookie, 'auth_token');
     try {
       const actor = verifyToken(token ?? '');
       client.data.actor = actor;
@@ -132,4 +135,13 @@ export class DeliveryGateway implements OnGatewayConnection {
   private restaurantRoom(restaurantId: string): string {
     return `restaurant:${restaurantId}`;
   }
+}
+
+/** One cookie of a Cookie header, undefined when absent. */
+export function cookieValue(header: string | undefined, name: string): string | undefined {
+  for (const part of (header ?? '').split(';')) {
+    const [key, ...rest] = part.trim().split('=');
+    if (key === name) return decodeURIComponent(rest.join('='));
+  }
+  return undefined;
 }
