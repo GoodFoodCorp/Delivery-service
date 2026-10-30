@@ -21,6 +21,16 @@ import { HealthModule } from './modules/health/health.module';
           return id;
         },
         autoLogging: { ignore: (req) => req.url === '/healthz' || req.url === '/readyz' },
+        // One short line per request: never the headers, which carry the
+        // session cookie, the bearer token and the service key.
+        serializers: {
+          req: (req: { id: string; method: string; url: string }) => ({ id: req.id, method: req.method, url: req.url }),
+          res: (res: { statusCode: number }) => ({ statusCode: res.statusCode }),
+        },
+        redact: {
+          paths: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-service-key"]', 'res.headers["set-cookie"]'],
+          censor: '[redacted]',
+        },
       },
     }),
     DbModule,
