@@ -23,6 +23,13 @@ export class WithdrawalController {
     return this.withdrawals.request(actor);
   }
 
+  @Get('earnings')
+  @Roles('livreur')
+  @ApiOperation({ summary: "Connected courier's balance: delivered trips minus requested payouts" })
+  earnings(@CurrentActor() actor: Actor) {
+    return this.withdrawals.earnings(actor);
+  }
+
   @Get('withdrawals')
   @Roles('livreur')
   @ApiOperation({ summary: "Connected courier's withdrawal requests" })

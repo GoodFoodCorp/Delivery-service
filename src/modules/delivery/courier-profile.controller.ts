@@ -46,9 +46,4 @@ export class CourierProfileController {
   pushToken(@CurrentActor() actor: Actor, @Body() body: { pushToken: string }) {
     return this.profiles.setPushToken(actor.userId, body.pushToken);
   }
-
-  @Get('earnings')
-  earnings(@CurrentActor() actor: Actor) {
-    return this.profiles.earnings(actor.userId);
-  }
 }

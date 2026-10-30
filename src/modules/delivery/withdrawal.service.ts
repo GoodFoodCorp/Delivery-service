@@ -23,6 +23,22 @@ export class WithdrawalService {
     private readonly profiles: CourierProfileService,
   ) {}
 
+  /** Balance summary, computed like a withdrawal is: from the delivered
+   *  trips minus the payouts already requested. */
+  async earnings(actor: Actor) {
+    this.ensureRole(actor, ROLE_COURIER);
+    const [history, withdrawals] = await Promise.all([
+      this.deliveries.courierHistory(actor),
+      this.repo.listByCourier(actor.userId),
+    ]);
+    const { available } = this.balance(history.totalEarned, withdrawals);
+    return {
+      availableBalance: euros(available),
+      totalEarned: history.totalEarned,
+      completedTrips: history.completedTrips,
+    };
+  }
+
   /** Earnings history + payout state, in a single payload for the mobile screen. */
   async overview(actor: Actor) {
     this.ensureRole(actor, ROLE_COURIER);
