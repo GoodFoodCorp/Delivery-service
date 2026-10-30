@@ -36,8 +36,10 @@ export class CourierProfileService {
     if (!Object.values(CourierVehicleType).includes(input.vehicleType)) {
       throw new BadRequestException('Type de véhicule inconnu');
     }
-    if (!/^\d{9}$/.test(input.siret ?? '')) throw new BadRequestException('Le SIRET doit contenir 9 chiffres');
-    if (!input.city?.trim() || !input.iban?.trim()) throw new BadRequestException('La ville et l’IBAN sont obligatoires');
+    if (!/^\d{9}$/.test(input.siret ?? ''))
+      throw new BadRequestException('Le SIRET doit contenir 9 chiffres');
+    if (!input.city?.trim() || !input.iban?.trim())
+      throw new BadRequestException('La ville et l’IBAN sont obligatoires');
     if (!isValidIban(input.iban)) throw new BadRequestException('IBAN invalide');
     if (!input.hasBagEquipped) throw new BadRequestException('Un sac isotherme est obligatoire');
     if (
@@ -81,7 +83,9 @@ export class CourierProfileService {
     const profile = await this.profiles
       .findOneAndUpdate(
         { userId },
-        canCreate ? { iban: seal(normalized), $setOnInsert: { siret: '', city: '' } } : { iban: seal(normalized) },
+        canCreate
+          ? { iban: seal(normalized), $setOnInsert: { siret: '', city: '' } }
+          : { iban: seal(normalized) },
         canCreate ? { upsert: true, new: true, setDefaultsOnInsert: true } : { new: true },
       )
       .exec();
@@ -90,6 +94,12 @@ export class CourierProfileService {
   }
 
   /** Stored IBAN, or an empty string when the courier has none. */
+  /** The courier's vehicle, for arrival times; null without a profile. */
+  async vehicleOf(userId: string): Promise<string | null> {
+    const profile = await this.profiles.findOne({ userId }).select('vehicleType').lean().exec();
+    return profile?.vehicleType ?? null;
+  }
+
   async getIban(userId: string): Promise<string> {
     const profile = await this.profiles.findOne({ userId }).select('+iban').lean().exec();
     return open(profile?.iban ?? '');
@@ -125,9 +135,11 @@ export class CourierProfileService {
    * those seen within radiusKm of it recently — plus those whose position is
    * unknown, so a courier never misses everything because location is off.
    */
-  async listPushTargets(
-    near?: { lat: number; lng: number; radiusKm: number },
-  ): Promise<{ userId: string; pushToken: string }[]> {
+  async listPushTargets(near?: {
+    lat: number;
+    lng: number;
+    radiusKm: number;
+  }): Promise<{ userId: string; pushToken: string }[]> {
     const base = { isAvailable: true, pushToken: { $ne: null } };
     const select = (filter: object) => this.profiles.find(filter).select('+pushToken').lean().exec();
     let profiles: { userId: string; pushToken?: string | null }[];
@@ -137,7 +149,9 @@ export class CourierProfileService {
         select({
           ...base,
           locatedAt: { $gte: recent },
-          lastLocation: { $geoWithin: { $centerSphere: [[near.lng, near.lat], near.radiusKm / EARTH_RADIUS_KM] } },
+          lastLocation: {
+            $geoWithin: { $centerSphere: [[near.lng, near.lat], near.radiusKm / EARTH_RADIUS_KM] },
+          },
         }),
         select({ ...base, $or: [{ locatedAt: null }, { locatedAt: { $lt: recent } }] }),
       ]);

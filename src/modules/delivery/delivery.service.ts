@@ -1,9 +1,16 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import { Actor } from '../../common/auth.util';
 import { DomainError, DomainErrorCode } from '../../common/errors';
 import { DELIVERY_REPOSITORY, DeliveryRepository, NearQuery } from './delivery.repository';
-import { computeCourierFeeCents, distanceKm, estimateDeliveryTime, pseudoCoordinates } from './geo';
+import {
+  computeCourierFeeCents,
+  distanceKm,
+  estimateDeliveryTime,
+  liveEta,
+  LiveEta,
+  pseudoCoordinates,
+} from './geo';
 import { OrdersClient, ReadyOrder } from './orders.client';
 import { RestaurantsClient } from './restaurants.client';
 import {
@@ -27,6 +34,22 @@ const MAX_HANDOVER_ATTEMPTS = 5;
 
 /** A courier's GPS point is stored at most this often (the live feed still gets every point). */
 const POSITION_STORE_INTERVAL_MS = 3000;
+/** The arrival time read by the order page is saved at most this often. */
+const ETA_STORE_INTERVAL_MS = 30_000;
+
+/** Where the courier's vehicle comes from (courier profiles). */
+export interface VehicleLookup {
+  vehicleOf(courierId: string): Promise<string | null>;
+}
+
+/** One live point of a delivery, as sent to whoever tracks it. */
+export interface LivePosition extends LiveEta {
+  deliveryId: string;
+  lat: number;
+  lng: number;
+  timestamp: Date;
+  status: DeliveryStatus;
+}
 
 const ORDER_IN_DELIVERY = 'IN_DELIVERY';
 const ORDER_DELIVERED = 'DELIVERED';
@@ -51,11 +74,14 @@ export interface AvailableDeliveryView {
 export class DeliveryService {
   private readonly logger = new Logger(DeliveryService.name);
   private readonly lastStoredPosition = new Map<string, number>();
+  private readonly lastStoredEta = new Map<string, number>();
+  private readonly vehicleByCourier = new Map<string, string | null>();
 
   constructor(
     @Inject(DELIVERY_REPOSITORY) private readonly repo: DeliveryRepository,
     private readonly orders: OrdersClient,
     private readonly restaurants: RestaurantsClient,
+    @Optional() @Inject('VEHICLE_LOOKUP') private readonly vehicles?: VehicleLookup,
   ) {}
 
   // ── Deliveries lifecycle ──────────────────────────────────
@@ -65,7 +91,9 @@ export class DeliveryService {
    * shared by the order event consumer and the reconciliation job. Pickups
    * (click & collect) never get a delivery.
    */
-  async registerReadyOrder(order: ReadyOrder): Promise<{ delivery: DeliveryDocument | null; created: boolean }> {
+  async registerReadyOrder(
+    order: ReadyOrder,
+  ): Promise<{ delivery: DeliveryDocument | null; created: boolean }> {
     if (order.fulfillment === FULFILLMENT_PICKUP) {
       return { delivery: null, created: false };
     }
@@ -84,7 +112,10 @@ export class DeliveryService {
       ? { lat: order.dropoff_lat as number, lng: order.dropoff_lng as number }
       : pseudoCoordinates(order.id);
 
-    const pickup = { address: restaurant?.address ?? `Restaurant ${order.restaurant_id.slice(0, 8)}`, ...pickupPoint };
+    const pickup = {
+      address: restaurant?.address ?? `Restaurant ${order.restaurant_id.slice(0, 8)}`,
+      ...pickupPoint,
+    };
     const dropoff = { address: order.delivery_address, ...dropoffPoint };
     try {
       const delivery = await this.repo.create({
@@ -195,9 +226,25 @@ export class DeliveryService {
     if (delivery.status !== DeliveryStatus.Assigned) {
       throw DomainError.conflict(`cannot pick up a delivery in status ${delivery.status}`);
     }
-    await this.advanceOrder(delivery, ORDER_IN_DELIVERY, actor.userId, requestId, 'order is not ready for pickup yet');
+    await this.advanceOrder(
+      delivery,
+      ORDER_IN_DELIVERY,
+      actor.userId,
+      requestId,
+      'order is not ready for pickup yet',
+    );
+    const now = new Date();
+    const eta = liveEta(
+      delivery.pickup,
+      delivery.pickup,
+      delivery.dropoff,
+      true,
+      await this.vehicleOf(actor.userId),
+      now,
+    );
     return this.applyTransition(delivery, actor, [DeliveryStatus.Assigned], DeliveryStatus.PickedUp, {
-      pickedUpAt: new Date(),
+      pickedUpAt: now,
+      estimatedDeliveryTime: eta.etaAt,
     });
   }
 
@@ -206,14 +253,25 @@ export class DeliveryService {
    * customer's 4-digit handover code proves the meal reached them; after 5
    * wrong codes the delivery is locked for the support team.
    */
-  async dropoff(actor: Actor, deliveryId: string, code?: string, requestId?: string): Promise<DeliveryDocument> {
+  async dropoff(
+    actor: Actor,
+    deliveryId: string,
+    code?: string,
+    requestId?: string,
+  ): Promise<DeliveryDocument> {
     const delivery = await this.getOwnDelivery(actor, deliveryId);
     const from = [DeliveryStatus.PickedUp, DeliveryStatus.InTransit];
     if (!from.includes(delivery.status)) {
       throw DomainError.conflict(`cannot drop off a delivery in status ${delivery.status}`);
     }
     await this.checkHandoverCode(delivery, code);
-    await this.advanceOrder(delivery, ORDER_DELIVERED, actor.userId, requestId, 'order cannot be marked delivered');
+    await this.advanceOrder(
+      delivery,
+      ORDER_DELIVERED,
+      actor.userId,
+      requestId,
+      'order cannot be marked delivered',
+    );
     return this.applyTransition(delivery, actor, from, DeliveryStatus.Delivered, { deliveredAt: new Date() });
   }
 
@@ -226,7 +284,13 @@ export class DeliveryService {
     if (delivery.customerId !== actor.userId) {
       throw DomainError.forbidden('only the customer can rate this delivery');
     }
-    const rated = await this.repo.rate(String(delivery._id), actor.userId, rating, comment.trim().slice(0, 500), new Date());
+    const rated = await this.repo.rate(
+      String(delivery._id),
+      actor.userId,
+      rating,
+      comment.trim().slice(0, 500),
+      new Date(),
+    );
     if (!rated) {
       throw DomainError.conflict('only a delivered delivery can be rated, once');
     }
@@ -248,7 +312,8 @@ export class DeliveryService {
     }
     const last = await this.repo.lastPosition(String(delivery._id));
     // The handover code is the customer's to give: never shown to the courier.
-    const handoverCode = delivery.customerId === actor.userId ? await this.repo.handoverCodeOf(String(delivery._id)) : undefined;
+    const handoverCode =
+      delivery.customerId === actor.userId ? await this.repo.handoverCodeOf(String(delivery._id)) : undefined;
     return {
       delivery,
       lastPosition: last ? { lat: last.lat, lng: last.lng, timestamp: last.timestamp } : null,
@@ -293,14 +358,25 @@ export class DeliveryService {
   // ── Live tracking ─────────────────────────────────────────
 
   /** Stores a courier GPS point (throttled); the first one flips PICKED_UP → IN_TRANSIT. */
-  async recordPosition(actor: Actor, deliveryId: string, lat: number, lng: number) {
+  /**
+   * A GPS point of the courier, from acceptance (on the way to the
+   * restaurant) to drop-off. The arrival time is recomputed from it each time
+   * and sent with the point; it is saved now and then for the order page.
+   */
+  async recordPosition(actor: Actor, deliveryId: string, lat: number, lng: number): Promise<LivePosition> {
     const delivery = await this.getOwnDelivery(actor, deliveryId);
-    if (delivery.status !== DeliveryStatus.PickedUp && delivery.status !== DeliveryStatus.InTransit) {
+    const tracked = [DeliveryStatus.Assigned, DeliveryStatus.PickedUp, DeliveryStatus.InTransit];
+    if (!tracked.includes(delivery.status)) {
       throw DomainError.conflict('position updates are only accepted during an active delivery');
     }
     let status = delivery.status;
     if (status === DeliveryStatus.PickedUp) {
-      await this.repo.transition(String(delivery._id), actor.userId, [DeliveryStatus.PickedUp], DeliveryStatus.InTransit);
+      await this.repo.transition(
+        String(delivery._id),
+        actor.userId,
+        [DeliveryStatus.PickedUp],
+        DeliveryStatus.InTransit,
+      );
       status = DeliveryStatus.InTransit;
     }
     const timestamp = new Date();
@@ -309,11 +385,34 @@ export class DeliveryService {
       await this.repo.addPosition(id, lat, lng, timestamp);
       this.lastStoredPosition.set(id, timestamp.getTime());
     }
-    return { deliveryId: id, lat, lng, timestamp, status };
+    const eta = liveEta(
+      { lat, lng },
+      delivery.pickup,
+      delivery.dropoff,
+      status !== DeliveryStatus.Assigned,
+      await this.vehicleOf(actor.userId),
+      timestamp,
+    );
+    if (timestamp.getTime() - (this.lastStoredEta.get(id) ?? 0) >= ETA_STORE_INTERVAL_MS) {
+      await this.repo.transition(id, actor.userId, [status], status, { estimatedDeliveryTime: eta.etaAt });
+      this.lastStoredEta.set(id, timestamp.getTime());
+    }
+    return { deliveryId: id, lat, lng, timestamp, status, ...eta };
+  }
+
+  private async vehicleOf(courierId: string): Promise<string | null> {
+    if (!this.vehicles) return null;
+    if (!this.vehicleByCourier.has(courierId)) {
+      if (this.vehicleByCourier.size > 10_000) this.vehicleByCourier.clear();
+      this.vehicleByCourier.set(courierId, await this.vehicles.vehicleOf(courierId).catch(() => null));
+    }
+    return this.vehicleByCourier.get(courierId) ?? null;
   }
 
   /** What couriers are told about a new delivery (no customer data). */
-  toAvailableView(d: DeliveryDocument | Delivery & { _id: unknown; createdAt?: Date }): AvailableDeliveryView {
+  toAvailableView(
+    d: DeliveryDocument | (Delivery & { _id: unknown; createdAt?: Date }),
+  ): AvailableDeliveryView {
     const round = (v: number) => Math.round(v * 200) / 200; // ~500 m grid
     return {
       id: String(d._id),
@@ -338,7 +437,9 @@ export class DeliveryService {
     }
     if (code?.trim() !== expected) {
       const attempts = await this.repo.recordHandoverAttempt(String(delivery._id));
-      throw DomainError.validation(`wrong handover code (${MAX_HANDOVER_ATTEMPTS - attempts} attempt(s) left)`);
+      throw DomainError.validation(
+        `wrong handover code (${MAX_HANDOVER_ATTEMPTS - attempts} attempt(s) left)`,
+      );
     }
   }
 

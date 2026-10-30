@@ -16,7 +16,11 @@ function setup() {
   const repo = new FakeRepo();
   const orders = new FakeOrders();
   const restaurants = new FakeRestaurants();
-  const service = new DeliveryService(repo, orders as unknown as OrdersClient, restaurants as unknown as RestaurantsClient);
+  const service = new DeliveryService(
+    repo,
+    orders as unknown as OrdersClient,
+    restaurants as unknown as RestaurantsClient,
+  );
   return { repo, orders, restaurants, service };
 }
 
@@ -50,7 +54,12 @@ const readyOrder: ReadyOrder = {
 describe('registerReadyOrder', () => {
   it('uses the real restaurant and drop-off positions', async () => {
     const { service, restaurants } = setup();
-    restaurants.locations.set('resto-9', { name: 'Good Food', address: '5 rue du Départ, Paris', lat: 48.84, lng: 2.32 });
+    restaurants.locations.set('resto-9', {
+      name: 'Good Food',
+      address: '5 rue du Départ, Paris',
+      lat: 48.84,
+      lng: 2.32,
+    });
 
     const { delivery, created } = await service.registerReadyOrder(readyOrder);
 
@@ -65,7 +74,11 @@ describe('registerReadyOrder', () => {
 
   it('falls back to estimated positions, flagged, when one is unknown', async () => {
     const { service } = setup();
-    const { delivery } = await service.registerReadyOrder({ ...readyOrder, dropoff_lat: null, dropoff_lng: null });
+    const { delivery } = await service.registerReadyOrder({
+      ...readyOrder,
+      dropoff_lat: null,
+      dropoff_lng: null,
+    });
     expect(delivery!.locationApproximate).toBe(true);
   });
 
@@ -240,9 +253,26 @@ describe('cancelForOrder', () => {
 describe('courierHistory', () => {
   it('totals every delivered trip, fee and tip, and lists recent ones', async () => {
     const { service, repo } = setup();
-    await seedDelivery(repo, { status: DeliveryStatus.Delivered, livreurId: 'liv-1', courierFeeCents: 450, tipCents: 200, deliveredAt: new Date() });
-    await seedDelivery(repo, { orderId: 'o2', status: DeliveryStatus.Delivered, livreurId: 'liv-1', courierFeeCents: null, deliveredAt: new Date(0) });
-    await seedDelivery(repo, { orderId: 'o3', status: DeliveryStatus.Delivered, livreurId: 'liv-2', courierFeeCents: 999 });
+    await seedDelivery(repo, {
+      status: DeliveryStatus.Delivered,
+      livreurId: 'liv-1',
+      courierFeeCents: 450,
+      tipCents: 200,
+      deliveredAt: new Date(),
+    });
+    await seedDelivery(repo, {
+      orderId: 'o2',
+      status: DeliveryStatus.Delivered,
+      livreurId: 'liv-1',
+      courierFeeCents: null,
+      deliveredAt: new Date(0),
+    });
+    await seedDelivery(repo, {
+      orderId: 'o3',
+      status: DeliveryStatus.Delivered,
+      livreurId: 'liv-2',
+      courierFeeCents: 999,
+    });
 
     const history = await service.courierHistory(courier);
 
@@ -270,8 +300,32 @@ describe('recordPosition', () => {
 
   it('rejects positions outside an active delivery', async () => {
     const { service, repo } = setup();
-    const d = await seedDelivery(repo, { status: DeliveryStatus.Assigned, livreurId: 'liv-1' });
+    const d = await seedDelivery(repo, { status: DeliveryStatus.Delivered, livreurId: 'liv-1' });
     await expectDomainError(service.recordPosition(courier, String(d._id), 1, 1), DomainErrorCode.Conflict);
+  });
+
+  it('tracks the courier on the way to the restaurant, with the arrival time', async () => {
+    const { service, repo } = setup();
+    const d = await seedDelivery(repo, { status: DeliveryStatus.Assigned, livreurId: 'liv-1' });
+
+    const point = await service.recordPosition(courier, String(d._id), 48.84, 2.34);
+
+    expect(point.status).toBe(DeliveryStatus.Assigned);
+    expect(point.phase).toBe('TO_RESTAURANT');
+    expect(point.etaAt.getTime()).toBeGreaterThan(Date.now());
+    expect((await repo.findById(String(d._id)))!.estimatedDeliveryTime).toEqual(point.etaAt);
+  });
+
+  it('brings the arrival time closer as the courier nears the customer', async () => {
+    const { service, repo } = setup();
+    const d = await seedDelivery(repo, { status: DeliveryStatus.InTransit, livreurId: 'liv-1' });
+
+    const far = await service.recordPosition(courier, String(d._id), 48.85, 2.35);
+    const near = await service.recordPosition(courier, String(d._id), 48.8599, 2.3599);
+
+    expect(near.phase).toBe('TO_CUSTOMER');
+    expect(near.remainingKm).toBeLessThan(far.remainingKm);
+    expect(near.etaAt.getTime()).toBeLessThan(far.etaAt.getTime());
   });
 });
 
@@ -303,7 +357,11 @@ describe('getById and canWatch', () => {
 describe('proof of delivery', () => {
   async function onTheWay() {
     const ctx = setup();
-    const { delivery } = await ctx.service.registerReadyOrder({ ...readyOrder, customer_id: 'cust-1', restaurant_id: 'resto-1' });
+    const { delivery } = await ctx.service.registerReadyOrder({
+      ...readyOrder,
+      customer_id: 'cust-1',
+      restaurant_id: 'resto-1',
+    });
     const id = String(delivery!._id);
     await ctx.service.accept(courier, id);
     await ctx.service.pickup(courier, id);
@@ -326,7 +384,9 @@ describe('proof of delivery', () => {
     const wrong = code === '0000' ? '1111' : '0000';
 
     await expectDomainError(service.dropoff(courier, id, wrong), DomainErrorCode.Validation);
-    await expect(service.dropoff(courier, id, code)).resolves.toMatchObject({ status: DeliveryStatus.Delivered });
+    await expect(service.dropoff(courier, id, code)).resolves.toMatchObject({
+      status: DeliveryStatus.Delivered,
+    });
 
     const other = await onTheWay();
     const otherCode = (await other.repo.handoverCodeOf(other.id))!;

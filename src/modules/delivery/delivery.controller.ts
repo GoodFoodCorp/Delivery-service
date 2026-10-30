@@ -9,6 +9,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { NearQuery } from './delivery.repository';
 import { DeliveryService } from './delivery.service';
 import { WithdrawalService } from './withdrawal.service';
+import { AvailabilityNotifier } from './availability.notifier';
 
 const DEFAULT_RADIUS_KM = 5;
 const MAX_RADIUS_KM = 30;
@@ -22,6 +23,7 @@ export class DeliveryController {
   constructor(
     private readonly deliveries: DeliveryService,
     private readonly withdrawals: WithdrawalService,
+    private readonly notifier: AvailabilityNotifier,
   ) {}
 
   @Get('available')
@@ -48,22 +50,36 @@ export class DeliveryController {
 
   @Get('history')
   @Roles('livreur')
-  @ApiOperation({ summary: 'Earnings, recent delivered trips, balance and withdrawals of the connected courier' })
+  @ApiOperation({
+    summary: 'Earnings, recent delivered trips, balance and withdrawals of the connected courier',
+  })
   history(@CurrentActor() actor: Actor) {
     return this.withdrawals.overview(actor);
   }
 
   @Post(':id/accept')
   @Roles('livreur')
-  @ApiOperation({ summary: 'Courier takes the delivery (atomic: one courier wins), even while the order is cooking' })
-  accept(@CurrentActor() actor: Actor, @Param('id') id: string, @Headers('x-request-id') requestId?: string) {
-    return this.deliveries.accept(actor, id, requestId);
+  @ApiOperation({
+    summary: 'Courier takes the delivery (atomic: one courier wins), even while the order is cooking',
+  })
+  async accept(
+    @CurrentActor() actor: Actor,
+    @Param('id') id: string,
+    @Headers('x-request-id') requestId?: string,
+  ) {
+    const delivery = await this.deliveries.accept(actor, id, requestId);
+    this.notifier.notifyAssigned(delivery);
+    return delivery;
   }
 
   @Post(':id/release')
   @Roles('livreur')
   @ApiOperation({ summary: 'Courier gives the delivery up before collecting it' })
-  release(@CurrentActor() actor: Actor, @Param('id') id: string, @Headers('x-request-id') requestId?: string) {
+  release(
+    @CurrentActor() actor: Actor,
+    @Param('id') id: string,
+    @Headers('x-request-id') requestId?: string,
+  ) {
     return this.deliveries.release(actor, id, requestId);
   }
 
@@ -89,7 +105,11 @@ export class DeliveryController {
   @Post(':id/rating')
   @Roles('user')
   @ApiOperation({ summary: 'The customer rates a delivered delivery {rating: 1-5, comment}' })
-  rate(@CurrentActor() actor: Actor, @Param('id') id: string, @Body() body: { rating: number; comment?: string }) {
+  rate(
+    @CurrentActor() actor: Actor,
+    @Param('id') id: string,
+    @Body() body: { rating: number; comment?: string },
+  ) {
     return this.deliveries.rate(actor, id, Number(body?.rating), body?.comment ?? '');
   }
 

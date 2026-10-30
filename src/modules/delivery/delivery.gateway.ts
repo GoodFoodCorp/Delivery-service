@@ -14,6 +14,7 @@ import { AvailableDeliveryView, DeliveryService } from './delivery.service';
 import { SubscribeDto } from './dto/subscribe.dto';
 import { UpdatePositionDto } from './dto/update-position.dto';
 import { DeliveryDocument } from './entities/delivery.schema';
+import { Notification, NotificationTarget } from './messaging/order-notifications';
 
 const COURIERS_ROOM = 'couriers';
 
@@ -33,6 +34,8 @@ interface AuthedSocket extends Socket {
  *  - courier emits  `position:update`   { deliveryId, lat, lng }
  *  - watchers emit  `delivery:subscribe`{ deliveryId } then receive
  *    `position:broadcast` and `delivery:cancelled` for that delivery.
+ *  - everyone receives `notification` (order news) in their own room; a
+ *    manager also gets their restaurant's.
  */
 @WebSocketGateway({ namespace: 'tracking', cors: { origin: true, credentials: true } })
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
@@ -49,10 +52,12 @@ export class DeliveryGateway implements OnGatewayConnection {
       (client.handshake.auth?.token as string | undefined) ??
       client.handshake.headers.authorization?.replace(/^Bearer /, '');
     try {
-      client.data.actor = verifyToken(token ?? '');
-      if (client.data.actor.roles.includes('livreur')) {
-        void client.join([COURIERS_ROOM, this.courierRoom(client.data.actor.userId)]);
-      }
+      const actor = verifyToken(token ?? '');
+      client.data.actor = actor;
+      const rooms = [this.userRoom(actor.userId)];
+      if (actor.roles.includes('livreur')) rooms.push(COURIERS_ROOM, this.courierRoom(actor.userId));
+      if (actor.roles.includes('manager') && actor.tenantId) rooms.push(this.restaurantRoom(actor.tenantId));
+      void client.join(rooms);
     } catch {
       client.emit('error', { error: 'unauthorized' });
       client.disconnect(true);
@@ -74,6 +79,17 @@ export class DeliveryGateway implements OnGatewayConnection {
     this.server.to(rooms).emit('delivery:cancelled', payload);
     // An unassigned delivery disappears from every courier's list.
     if (!delivery.livreurId) this.server.to(COURIERS_ROOM).emit('delivery:withdrawn', payload);
+  }
+
+  /** Order news to the people it concerns. */
+  emitNotification(target: NotificationTarget, notification: Notification): void {
+    const room =
+      target.kind === 'restaurant'
+        ? this.restaurantRoom(target.id)
+        : target.kind === 'courier'
+          ? this.courierRoom(target.id)
+          : this.userRoom(target.id);
+    this.server.to(room).emit('notification', notification);
   }
 
   // Plain return values are delivered through the Socket.IO ack callback.
@@ -107,5 +123,13 @@ export class DeliveryGateway implements OnGatewayConnection {
 
   private courierRoom(courierId: string): string {
     return `courier:${courierId}`;
+  }
+
+  private userRoom(userId: string): string {
+    return `user:${userId}`;
+  }
+
+  private restaurantRoom(restaurantId: string): string {
+    return `restaurant:${restaurantId}`;
   }
 }

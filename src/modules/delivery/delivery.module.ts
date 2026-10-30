@@ -20,6 +20,7 @@ import { WithdrawalController } from './withdrawal.controller';
 import { WithdrawalService } from './withdrawal.service';
 import { OrderReadyConsumer } from './messaging/order-ready.consumer';
 import { OrderReadyHandler } from './messaging/order-ready.handler';
+import { OrderNotificationsConsumer } from './messaging/order-notifications.consumer';
 
 @Module({
   imports: [
@@ -45,6 +46,8 @@ import { OrderReadyHandler } from './messaging/order-ready.handler';
     OrderReadyHandler,
     OrderReadyConsumer,
     { provide: DELIVERY_REPOSITORY, useClass: MongooseDeliveryRepository },
+    { provide: 'VEHICLE_LOOKUP', useExisting: CourierProfileService },
+    OrderNotificationsConsumer,
   ],
 })
 export class DeliveryModule {}
