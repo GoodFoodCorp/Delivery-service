@@ -1,4 +1,4 @@
-import { DeliveryGateway } from './delivery.gateway';
+import { cookieValue, DeliveryGateway } from './delivery.gateway';
 import { AvailableDeliveryView } from './delivery.service';
 import { DeliveryDocument } from './entities/delivery.schema';
 
@@ -36,5 +36,13 @@ describe('DeliveryGateway', () => {
     gateway.emitCancelled({ _id: 'd1', orderId: 'o1', livreurId: null } as unknown as DeliveryDocument);
 
     expect(to).toHaveBeenCalledWith('couriers');
+  });
+});
+
+describe('cookieValue', () => {
+  it('reads the session cookie the browser sends with the handshake', () => {
+    expect(cookieValue('theme=dark; auth_token=abc.def%3D; refresh_token=x', 'auth_token')).toBe('abc.def=');
+    expect(cookieValue(undefined, 'auth_token')).toBeUndefined();
+    expect(cookieValue('other=1', 'auth_token')).toBeUndefined();
   });
 });
