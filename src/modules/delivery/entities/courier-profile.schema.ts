@@ -47,8 +47,10 @@ export class CourierProfile {
   @Prop({ type: String, default: null, select: false })
   pushToken: string | null;
 
-  /** Last position the courier app reported (GeoJSON, longitude first). */
-  @Prop(raw({ type: { type: String, enum: ['Point'] }, coordinates: { type: [Number] } }))
+  /** Last position the courier app reported (GeoJSON, longitude first).
+   *  Absent until the first report: an array default would store an empty,
+   *  invalid point that the 2dsphere index rejects, failing every insert. */
+  @Prop(raw({ type: { type: String, enum: ['Point'] }, coordinates: { type: [Number], default: undefined } }))
   lastLocation?: { type: 'Point'; coordinates: [number, number] };
 
   @Prop({ type: Date, default: null })

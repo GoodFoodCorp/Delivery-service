@@ -33,14 +33,18 @@ export class CourierProfileService {
   }
 
   async apply(userId: string, input: CourierProfileInput) {
-    if (!/^\d{9}$/.test(input.siret)) throw new Error('Le SIRET doit contenir 9 chiffres');
-    if (!input.city?.trim() || !input.iban?.trim()) throw new Error('La ville et l’IBAN sont obligatoires');
-    if (!input.hasBagEquipped) throw new Error('Un sac isotherme est obligatoire');
+    if (!Object.values(CourierVehicleType).includes(input.vehicleType)) {
+      throw new BadRequestException('Type de véhicule inconnu');
+    }
+    if (!/^\d{9}$/.test(input.siret ?? '')) throw new BadRequestException('Le SIRET doit contenir 9 chiffres');
+    if (!input.city?.trim() || !input.iban?.trim()) throw new BadRequestException('La ville et l’IBAN sont obligatoires');
+    if (!isValidIban(input.iban)) throw new BadRequestException('IBAN invalide');
+    if (!input.hasBagEquipped) throw new BadRequestException('Un sac isotherme est obligatoire');
     if (
       (input.vehicleType === CourierVehicleType.Car || input.vehicleType === CourierVehicleType.Scooter) &&
       !input.drivingLicenseNumber?.trim()
     ) {
-      throw new Error('Le permis est obligatoire pour ce véhicule');
+      throw new BadRequestException('Le permis est obligatoire pour ce véhicule');
     }
     const profile = await this.profiles
       .findOneAndUpdate(
