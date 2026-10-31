@@ -27,7 +27,7 @@ export class DeliveryController {
   ) {}
 
   @Get('available')
-  @Roles('livreur', 'admin')
+  @Roles('livreur')
   @ApiOperation({ summary: 'Unassigned deliveries, closest first when lat/lng are given (no customer data)' })
   @ApiQuery({ name: 'lat', required: false })
   @ApiQuery({ name: 'lng', required: false })
@@ -115,7 +115,7 @@ export class DeliveryController {
 
   @Get(':id/route')
   @ApiOperation({
-    summary: 'Road route left to ride, with the arrival time (customer, courier, restaurant, admin)',
+    summary: 'Road route left to ride, with the arrival time (customer, courier, restaurant)',
   })
   route(@CurrentActor() actor: Actor, @Param('id') id: string) {
     return this.deliveries.routeOf(actor, id);

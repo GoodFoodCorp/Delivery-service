@@ -330,19 +330,20 @@ describe('recordPosition', () => {
 });
 
 describe('getById and canWatch', () => {
-  it('lets the customer, the assigned courier, the restaurant manager and admin view', async () => {
+  it('lets the customer, the assigned courier and the restaurant manager view', async () => {
     const { service, repo } = setup();
     const d = await seedDelivery(repo, { status: DeliveryStatus.Assigned, livreurId: 'liv-1' });
-    for (const actor of [customer, courier, manager, admin]) {
+    for (const actor of [customer, courier, manager]) {
       await expect(service.getById(actor, String(d._id))).resolves.toBeDefined();
       await expect(service.canWatch(actor, String(d._id))).resolves.toBe(true);
     }
   });
 
-  it('blocks any other courier, customer or manager', async () => {
+  it('blocks head office and any other courier, customer or manager', async () => {
     const { service, repo } = setup();
     const d = await seedDelivery(repo, { status: DeliveryStatus.Assigned, livreurId: 'liv-1' });
     const strangers: Actor[] = [
+      admin,
       otherCourier,
       { userId: 'cust-2', tenantId: '', roles: ['user'], token: 't' },
       { userId: 'mgr-2', tenantId: 'resto-2', roles: ['manager'], token: 't' },
