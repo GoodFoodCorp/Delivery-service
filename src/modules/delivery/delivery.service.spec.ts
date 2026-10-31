@@ -416,3 +416,17 @@ describe('rating', () => {
     await expectDomainError(service.rate(customer, String(d._id), 5), DomainErrorCode.Conflict);
   });
 });
+
+describe('accept limit', () => {
+  it('lets a courier carry two deliveries at once, not a third', async () => {
+    const { service, repo } = setup();
+    await seedDelivery(repo, { orderId: 'o-a', status: DeliveryStatus.Assigned, livreurId: 'liv-1' });
+    await seedDelivery(repo, { orderId: 'o-b', status: DeliveryStatus.InTransit, livreurId: 'liv-1' });
+    const third = await seedDelivery(repo, { orderId: 'o-c' });
+
+    await expectDomainError(service.accept(courier, String(third._id)), DomainErrorCode.Conflict);
+    await expect(service.accept(otherCourier, String(third._id))).resolves.toMatchObject({
+      livreurId: 'liv-2',
+    });
+  });
+});
