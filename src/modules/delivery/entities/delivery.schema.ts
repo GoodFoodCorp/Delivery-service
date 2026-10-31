@@ -113,9 +113,6 @@ export class Delivery {
   @Prop({ type: Number, default: null, min: 1, max: 5 })
   rating: number | null;
 
-  @Prop({ type: String, default: '' })
-  ratingComment: string;
-
   @Prop({ type: Date, default: null })
   ratedAt: Date | null;
 }

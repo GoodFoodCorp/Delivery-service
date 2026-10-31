@@ -308,8 +308,8 @@ export class DeliveryService {
     return this.applyTransition(delivery, actor, from, DeliveryStatus.Delivered, { deliveredAt: new Date() });
   }
 
-  /** The customer rates a delivered delivery, once. */
-  async rate(actor: Actor, deliveryId: string, rating: number, comment = ''): Promise<DeliveryDocument> {
+  /** The customer rates a delivered delivery, once: stars only, no comment. */
+  async rate(actor: Actor, deliveryId: string, rating: number): Promise<DeliveryDocument> {
     if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
       throw DomainError.validation('rating must be an integer from 1 to 5');
     }
@@ -317,13 +317,7 @@ export class DeliveryService {
     if (delivery.customerId !== actor.userId) {
       throw DomainError.forbidden('only the customer can rate this delivery');
     }
-    const rated = await this.repo.rate(
-      String(delivery._id),
-      actor.userId,
-      rating,
-      comment.trim().slice(0, 500),
-      new Date(),
-    );
+    const rated = await this.repo.rate(String(delivery._id), actor.userId, rating, new Date());
     if (!rated) {
       throw DomainError.conflict('only a delivered delivery can be rated, once');
     }

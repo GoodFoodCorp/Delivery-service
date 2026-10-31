@@ -56,7 +56,7 @@ export interface DeliveryRepository {
   /** Counts a wrong code; returns the attempts made so far. */
   recordHandoverAttempt(id: string): Promise<number>;
   /** Stores the customer's rating once, on a delivered delivery. */
-  rate(id: string, customerId: string, rating: number, comment: string, at: Date): Promise<DeliveryDocument | null>;
+  rate(id: string, customerId: string, rating: number, at: Date): Promise<DeliveryDocument | null>;
   ratingOf(courierId: string): Promise<{ average: number | null; count: number }>;
 }
 
@@ -205,11 +205,11 @@ export class MongooseDeliveryRepository implements DeliveryRepository {
     return doc?.handoverAttempts ?? 0;
   }
 
-  rate(id: string, customerId: string, rating: number, comment: string, at: Date): Promise<DeliveryDocument | null> {
+  rate(id: string, customerId: string, rating: number, at: Date): Promise<DeliveryDocument | null> {
     return this.deliveries
       .findOneAndUpdate(
         { _id: id, customerId, status: DeliveryStatus.Delivered, rating: null },
-        { $set: { rating, ratingComment: comment, ratedAt: at } },
+        { $set: { rating, ratedAt: at } },
         { new: true },
       )
       .exec();

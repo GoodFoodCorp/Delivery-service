@@ -406,7 +406,7 @@ describe('rating', () => {
 
     await expectDomainError(service.rate(customer, String(d._id), 6), DomainErrorCode.Validation);
     await expectDomainError(service.rate(otherCourier, String(d._id), 5), DomainErrorCode.Forbidden);
-    await expect(service.rate(customer, String(d._id), 4, 'rapide')).resolves.toMatchObject({ rating: 4 });
+    await expect(service.rate(customer, String(d._id), 4)).resolves.toMatchObject({ rating: 4 });
     await expectDomainError(service.rate(customer, String(d._id), 5), DomainErrorCode.Conflict);
     await expect(service.ratingOf('liv-1')).resolves.toEqual({ average: 4, count: 1 });
   });

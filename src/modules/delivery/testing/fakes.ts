@@ -50,7 +50,6 @@ export class FakeRepo implements DeliveryRepository {
       handoverCode: null,
       handoverAttempts: 0,
       rating: null,
-      ratingComment: '',
       ratedAt: null,
       createdAt: new Date(),
       ...data,
@@ -114,10 +113,10 @@ export class FakeRepo implements DeliveryRepository {
     d.handoverAttempts = (d.handoverAttempts ?? 0) + 1;
     return d.handoverAttempts;
   }
-  async rate(id: string, customerId: string, rating: number, comment: string, at: Date) {
+  async rate(id: string, customerId: string, rating: number, at: Date) {
     const d = this.docs.get(id);
     if (!d || d.customerId !== customerId || d.status !== DeliveryStatus.Delivered || d.rating) return null;
-    Object.assign(d, { rating, ratingComment: comment, ratedAt: at });
+    Object.assign(d, { rating, ratedAt: at });
     return this.out(d);
   }
   async ratingOf(courierId: string) {
