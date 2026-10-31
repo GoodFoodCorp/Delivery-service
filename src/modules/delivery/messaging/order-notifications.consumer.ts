@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import * as amqp from 'amqplib';
-import { DeliveryGateway } from '../delivery.gateway';
+import { NotificationsService } from '../notifications.service';
 import { ORDER_EVENTS_EXCHANGE } from './order-ready.event';
 import { orderNotifications } from './order-notifications';
 
@@ -19,7 +19,7 @@ export class OrderNotificationsConsumer implements OnModuleInit, OnModuleDestroy
   private stopped = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
 
-  constructor(private readonly gateway: DeliveryGateway) {}
+  constructor(private readonly notifications: NotificationsService) {}
 
   onModuleInit(): void {
     if (!process.env.RABBITMQ_URL) {
@@ -49,11 +49,11 @@ export class OrderNotificationsConsumer implements OnModuleInit, OnModuleDestroy
       await channel.bindQueue(QUEUE, ORDER_EVENTS_EXCHANGE, 'order.*');
       await channel.prefetch(50);
 
-      await channel.consume(QUEUE, (msg) => {
+      await channel.consume(QUEUE, async (msg) => {
         if (!msg) return;
         try {
           for (const { target, notification } of orderNotifications(msg.content)) {
-            this.gateway.emitNotification(target, notification);
+            await this.notifications.publish(target, notification);
           }
         } catch (err) {
           this.logger.warn(`order notification dropped: ${(err as Error).message}`);

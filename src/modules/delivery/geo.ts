@@ -71,8 +71,8 @@ const DEFAULT_SPEED_KMH = 18;
 /** Streets are longer than the straight line between two points. */
 const ROAD_FACTOR = 1.3;
 /** Minutes to collect the bag at the restaurant, then to hand it over. */
-const PICKUP_MINUTES = 3;
-const HANDOVER_MINUTES = 2;
+export const PICKUP_MINUTES = 3;
+export const HANDOVER_MINUTES = 2;
 
 export interface LiveEta {
   etaAt: Date;
