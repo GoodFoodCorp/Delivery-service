@@ -51,6 +51,12 @@ export interface LivePosition extends LiveEta {
   status: DeliveryStatus;
 }
 
+/** Deliveries a courier may carry at once (MAX_ACTIVE_DELIVERIES, default 2). */
+export function maxActiveDeliveries(): number {
+  const value = Number(process.env.MAX_ACTIVE_DELIVERIES);
+  return Number.isInteger(value) && value > 0 ? value : 2;
+}
+
 const ORDER_IN_DELIVERY = 'IN_DELIVERY';
 const ORDER_DELIVERED = 'DELIVERED';
 const FULFILLMENT_PICKUP = 'PICKUP';
@@ -186,6 +192,12 @@ export class DeliveryService {
    */
   async accept(actor: Actor, deliveryId: string, requestId?: string): Promise<DeliveryDocument> {
     this.ensureRole(actor, ROLE_COURIER);
+    const active = await this.repo.listByCourier(actor.userId, ACTIVE_STATUSES);
+    if (active.length >= maxActiveDeliveries()) {
+      throw DomainError.conflict(
+        `Terminez vos ${active.length} course(s) en cours avant d'en accepter une autre`,
+      );
+    }
     const delivery = await this.getOrThrow(deliveryId);
     const claimed = await this.repo.claim(String(delivery._id), actor.userId, new Date());
     if (!claimed) {
