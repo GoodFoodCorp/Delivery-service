@@ -430,3 +430,81 @@ describe('accept limit', () => {
     });
   });
 });
+
+describe('road routes', () => {
+  // A straight street going north from the courier to the customer: 1.1 km, 6 minutes.
+  const street = (from: { lat: number; lng: number }, to: { lat: number; lng: number }) => ({
+    path: Array.from(
+      { length: 11 },
+      (_, i) =>
+        [from.lat + ((to.lat - from.lat) * i) / 10, from.lng + ((to.lng - from.lng) * i) / 10] as [
+          number,
+          number,
+        ],
+    ),
+    distanceKm: 1.1,
+    durationMin: 6,
+  });
+
+  function withPlanner() {
+    const repo = new FakeRepo();
+    const calls: { lat: number; lng: number }[][] = [];
+    const planner = {
+      route: async (points: { lat: number; lng: number }[]) => {
+        calls.push(points);
+        return street(points[0], points[points.length - 1]);
+      },
+    };
+    const service = new DeliveryService(
+      repo,
+      new FakeOrders() as unknown as OrdersClient,
+      new FakeRestaurants() as unknown as RestaurantsClient,
+      undefined,
+      planner,
+    );
+    return { repo, service, calls };
+  }
+
+  it('sends the road route once and times the ride on it', async () => {
+    const { repo, service, calls } = withPlanner();
+    const d = await seedDelivery(repo, { status: DeliveryStatus.InTransit, livreurId: 'liv-1' });
+
+    const first = await service.recordPosition(courier, String(d._id), 48.85, 2.35);
+    const next = await service.recordPosition(courier, String(d._id), 48.855, 2.355);
+
+    expect(first.route).toHaveLength(11);
+    expect(next.route).toBeUndefined(); // still on it: not planned again
+    expect(calls).toHaveLength(1);
+    expect(next.remainingKm).toBeLessThan(first.remainingKm);
+    // Halfway along a 6-minute route: about 3 minutes + 2 for the handover.
+    const minutes = (next.etaAt.getTime() - Date.now()) / 60_000;
+    expect(minutes).toBeGreaterThan(4);
+    expect(minutes).toBeLessThan(6);
+  });
+
+  it('plans again after a detour, and through the restaurant before the pickup', async () => {
+    const { repo, service, calls } = withPlanner();
+    const d = await seedDelivery(repo, { status: DeliveryStatus.Assigned, livreurId: 'liv-1' });
+
+    await service.recordPosition(courier, String(d._id), 48.84, 2.34);
+    expect(calls[0]).toHaveLength(3); // courier → restaurant → customer
+    const detour = await service.recordPosition(courier, String(d._id), 48.8, 2.3);
+    expect(detour.route).toBeDefined();
+    expect(calls).toHaveLength(2);
+  });
+
+  it('falls back to the estimate when no route can be planned', async () => {
+    const repo = new FakeRepo();
+    const service = new DeliveryService(
+      repo,
+      new FakeOrders() as unknown as OrdersClient,
+      new FakeRestaurants() as unknown as RestaurantsClient,
+      undefined,
+      { route: async () => null },
+    );
+    const d = await seedDelivery(repo, { status: DeliveryStatus.InTransit, livreurId: 'liv-1' });
+    const point = await service.recordPosition(courier, String(d._id), 48.85, 2.35);
+    expect(point.route).toBeUndefined();
+    expect(point.etaAt.getTime()).toBeGreaterThan(Date.now());
+  });
+});

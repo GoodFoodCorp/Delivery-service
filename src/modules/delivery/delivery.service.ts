@@ -7,10 +7,13 @@ import {
   computeCourierFeeCents,
   distanceKm,
   estimateDeliveryTime,
+  HANDOVER_MINUTES,
   liveEta,
   LiveEta,
+  PICKUP_MINUTES,
   pseudoCoordinates,
 } from './geo';
+import { LatLng, locateOnRoute, PlannedRoute, remainingKm, ROUTE_PLANNER, RoutePlanner } from './routing';
 import { OrdersClient, ReadyOrder } from './orders.client';
 import { RestaurantsClient } from './restaurants.client';
 import {
@@ -49,7 +52,22 @@ export interface LivePosition extends LiveEta {
   lng: number;
   timestamp: Date;
   status: DeliveryStatus;
+  /** The road route left to ride, sent only when it was (re)planned. */
+  route?: LatLng[];
 }
+
+/** The planned route of a delivery and what it was planned for. */
+interface TrackedRoute {
+  phase: LiveEta['phase'];
+  route: PlannedRoute;
+  plannedAt: number;
+}
+
+/** A courier this far from the route gets a new one (wrong turn, detour). */
+const OFF_ROUTE_KM = 0.08;
+/** Traffic changes: a route is replanned at least this often. */
+const ROUTE_MAX_AGE_MS = 5 * 60_000;
+const MAX_TRACKED_ROUTES = 20_000;
 
 /** Deliveries a courier may carry at once (MAX_ACTIVE_DELIVERIES, default 2). */
 export function maxActiveDeliveries(): number {
@@ -82,12 +100,15 @@ export class DeliveryService {
   private readonly lastStoredPosition = new Map<string, number>();
   private readonly lastStoredEta = new Map<string, number>();
   private readonly vehicleByCourier = new Map<string, string | null>();
+  private readonly routes = new Map<string, TrackedRoute>();
+  private readonly planning = new Map<string, Promise<TrackedRoute | null>>();
 
   constructor(
     @Inject(DELIVERY_REPOSITORY) private readonly repo: DeliveryRepository,
     private readonly orders: OrdersClient,
     private readonly restaurants: RestaurantsClient,
     @Optional() @Inject('VEHICLE_LOOKUP') private readonly vehicles?: VehicleLookup,
+    @Optional() @Inject(ROUTE_PLANNER) private readonly planner?: RoutePlanner,
   ) {}
 
   // ── Deliveries lifecycle ──────────────────────────────────
@@ -284,6 +305,7 @@ export class DeliveryService {
       requestId,
       'order cannot be marked delivered',
     );
+    this.routes.delete(String(delivery._id));
     return this.applyTransition(delivery, actor, from, DeliveryStatus.Delivered, { deliveredAt: new Date() });
   }
 
@@ -397,19 +419,85 @@ export class DeliveryService {
       await this.repo.addPosition(id, lat, lng, timestamp);
       this.lastStoredPosition.set(id, timestamp.getTime());
     }
-    const eta = liveEta(
-      { lat, lng },
-      delivery.pickup,
-      delivery.dropoff,
-      status !== DeliveryStatus.Assigned,
-      await this.vehicleOf(actor.userId),
-      timestamp,
-    );
+    const vehicle = await this.vehicleOf(actor.userId);
+    const pickedUp = status !== DeliveryStatus.Assigned;
+    const { tracked: onRoute, replanned } = await this.routeFor(delivery, { lat, lng }, pickedUp, vehicle);
+    const eta = onRoute
+      ? etaOnRoute(onRoute, { lat, lng }, pickedUp, timestamp)
+      : liveEta({ lat, lng }, delivery.pickup, delivery.dropoff, pickedUp, vehicle, timestamp);
     if (timestamp.getTime() - (this.lastStoredEta.get(id) ?? 0) >= ETA_STORE_INTERVAL_MS) {
       await this.repo.transition(id, actor.userId, [status], status, { estimatedDeliveryTime: eta.etaAt });
       this.lastStoredEta.set(id, timestamp.getTime());
     }
-    return { deliveryId: id, lat, lng, timestamp, status, ...eta };
+    return {
+      deliveryId: id,
+      lat,
+      lng,
+      timestamp,
+      status,
+      ...eta,
+      ...(replanned && onRoute ? { route: onRoute.route.path } : {}),
+    };
+  }
+
+  /**
+   * The road route the courier follows: through the restaurant before the
+   * pickup, straight to the customer after. Kept per delivery and planned
+   * again on a new phase, a detour or when it gets old. One planning at a
+   * time per delivery; without a planner (or when it fails) there is none.
+   */
+  private async routeFor(
+    delivery: DeliveryDocument,
+    at: { lat: number; lng: number },
+    pickedUp: boolean,
+    vehicle: string | null,
+  ): Promise<{ tracked: TrackedRoute | null; replanned: boolean }> {
+    if (!this.planner) return { tracked: null, replanned: false };
+    const id = String(delivery._id);
+    const phase: LiveEta['phase'] = pickedUp ? 'TO_CUSTOMER' : 'TO_RESTAURANT';
+    const current = this.routes.get(id);
+    const fresh =
+      current &&
+      current.phase === phase &&
+      Date.now() - current.plannedAt < ROUTE_MAX_AGE_MS &&
+      locateOnRoute(current.route.path, at).offKm <= OFF_ROUTE_KM;
+    if (fresh) return { tracked: current, replanned: false };
+
+    let pending = this.planning.get(id);
+    if (!pending) {
+      const stops = pickedUp ? [at, delivery.dropoff] : [at, delivery.pickup, delivery.dropoff];
+      pending = this.planner
+        .route(stops, vehicle)
+        .then((route) => (route ? { phase, route, plannedAt: Date.now() } : null))
+        .finally(() => this.planning.delete(id));
+      this.planning.set(id, pending);
+    }
+    const planned = await pending;
+    if (!planned) return { tracked: current?.phase === phase ? current : null, replanned: false };
+    if (this.routes.size > MAX_TRACKED_ROUTES) this.routes.clear();
+    this.routes.set(id, planned);
+    return { tracked: planned, replanned: true };
+  }
+
+  /**
+   * The route left to ride, for a page opened during the delivery (the live
+   * feed only sends a route when it changes).
+   */
+  async routeOf(actor: Actor, deliveryId: string) {
+    const delivery = await this.getOrThrow(deliveryId);
+    if (!this.isAllowedToWatch(actor, delivery)) {
+      throw DomainError.forbidden('you are not allowed to view this delivery');
+    }
+    const id = String(delivery._id);
+    const riding = [DeliveryStatus.Assigned, DeliveryStatus.PickedUp, DeliveryStatus.InTransit];
+    if (!riding.includes(delivery.status)) return { route: null };
+    const pickedUp = delivery.status !== DeliveryStatus.Assigned;
+    const last = await this.repo.lastPosition(id);
+    const at = last ? { lat: last.lat, lng: last.lng } : delivery.pickup;
+    const vehicle = delivery.livreurId ? await this.vehicleOf(delivery.livreurId) : null;
+    const { tracked: route } = await this.routeFor(delivery, at, pickedUp, vehicle);
+    if (!route) return { route: null };
+    return { route: route.route.path, ...etaOnRoute(route, at, pickedUp, new Date()) };
   }
 
   private async vehicleOf(courierId: string): Promise<string | null> {
@@ -526,4 +614,23 @@ export class DeliveryService {
       throw DomainError.forbidden(`requires role: ${roles.join(' or ')}`);
     }
   }
+}
+
+/** Arrival time from where the courier is on the planned route. */
+function etaOnRoute(
+  tracked: TrackedRoute,
+  at: { lat: number; lng: number },
+  pickedUp: boolean,
+  now: Date,
+): LiveEta {
+  const { route } = tracked;
+  const { index } = locateOnRoute(route.path, at);
+  const left = remainingKm(route.path, index);
+  const share = route.distanceKm > 0 ? Math.min(1, left / route.distanceKm) : 0;
+  const minutes = route.durationMin * share + HANDOVER_MINUTES + (pickedUp ? 0 : PICKUP_MINUTES);
+  return {
+    etaAt: new Date(now.getTime() + minutes * 60_000),
+    remainingKm: Math.round(left * 10) / 10,
+    phase: pickedUp ? 'TO_CUSTOMER' : 'TO_RESTAURANT',
+  };
 }

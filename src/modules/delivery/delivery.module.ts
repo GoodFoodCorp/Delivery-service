@@ -21,6 +21,15 @@ import { WithdrawalService } from './withdrawal.service';
 import { OrderReadyConsumer } from './messaging/order-ready.consumer';
 import { OrderReadyHandler } from './messaging/order-ready.handler';
 import { OrderNotificationsConsumer } from './messaging/order-notifications.consumer';
+import { OsrmRoutePlanner, ROUTE_PLANNER } from './routing';
+import { NotificationsController } from './notifications.controller';
+import { NotificationsService } from './notifications.service';
+import {
+  NotificationRead,
+  NotificationReadSchema,
+  StoredNotification,
+  StoredNotificationSchema,
+} from './entities/notification.schema';
 
 @Module({
   imports: [
@@ -29,9 +38,11 @@ import { OrderNotificationsConsumer } from './messaging/order-notifications.cons
       { name: PositionUpdate.name, schema: PositionUpdateSchema },
       { name: CourierProfile.name, schema: CourierProfileSchema },
       { name: Withdrawal.name, schema: WithdrawalSchema },
+      { name: StoredNotification.name, schema: StoredNotificationSchema },
+      { name: NotificationRead.name, schema: NotificationReadSchema },
     ]),
   ],
-  controllers: [DeliveryController, CourierProfileController, WithdrawalController],
+  controllers: [DeliveryController, CourierProfileController, WithdrawalController, NotificationsController],
   providers: [
     DeliveryService,
     DeliveryGateway,
@@ -47,7 +58,9 @@ import { OrderNotificationsConsumer } from './messaging/order-notifications.cons
     OrderReadyConsumer,
     { provide: DELIVERY_REPOSITORY, useClass: MongooseDeliveryRepository },
     { provide: 'VEHICLE_LOOKUP', useExisting: CourierProfileService },
+    { provide: ROUTE_PLANNER, useClass: OsrmRoutePlanner },
     OrderNotificationsConsumer,
+    NotificationsService,
   ],
 })
 export class DeliveryModule {}

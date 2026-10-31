@@ -16,7 +16,8 @@ export interface Notification {
   at: string;
 }
 
-export type NotificationTarget = { kind: 'user' | 'restaurant' | 'courier'; id: string };
+/** couriers/all: every courier (a new delivery to take). */
+export type NotificationTarget = { kind: 'user' | 'restaurant' | 'courier' | 'couriers'; id: string };
 
 export interface Addressed {
   target: NotificationTarget;

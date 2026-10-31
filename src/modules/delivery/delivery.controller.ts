@@ -113,6 +113,14 @@ export class DeliveryController {
     return this.deliveries.rate(actor, id, Number(body?.rating), body?.comment ?? '');
   }
 
+  @Get(':id/route')
+  @ApiOperation({
+    summary: 'Road route left to ride, with the arrival time (customer, courier, restaurant, admin)',
+  })
+  route(@CurrentActor() actor: Actor, @Param('id') id: string) {
+    return this.deliveries.routeOf(actor, id);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Delivery detail + last known position' })
   getById(@CurrentActor() actor: Actor, @Param('id') id: string) {

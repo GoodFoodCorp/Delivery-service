@@ -91,7 +91,9 @@ export class DeliveryGateway implements OnGatewayConnection {
         ? this.restaurantRoom(target.id)
         : target.kind === 'courier'
           ? this.courierRoom(target.id)
-          : this.userRoom(target.id);
+          : target.kind === 'couriers'
+            ? COURIERS_ROOM
+            : this.userRoom(target.id);
     this.server.to(room).emit('notification', notification);
   }
 
