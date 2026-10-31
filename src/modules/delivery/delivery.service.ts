@@ -25,7 +25,6 @@ import {
 } from './entities/delivery.schema';
 
 const ROLE_COURIER = 'livreur';
-const ROLE_ADMIN = 'admin';
 const ROLE_MANAGER = 'manager';
 
 /** Bounds of the lists returned at once. */
@@ -191,7 +190,7 @@ export class DeliveryService {
 
   /** Deliveries a courier can accept, closest first when the courier's position is given. */
   async listAvailable(actor: Actor, near: NearQuery | null = null): Promise<AvailableDeliveryView[]> {
-    this.ensureRole(actor, ROLE_COURIER, ROLE_ADMIN);
+    this.ensureRole(actor, ROLE_COURIER);
     const list = await this.repo.listAvailable(near, MAX_AVAILABLE);
     return list.map((d) => this.toAvailableView(d));
   }
@@ -338,7 +337,7 @@ export class DeliveryService {
 
   // ── Reads ─────────────────────────────────────────────────
 
-  /** Detail + last known position: the customer, the assigned courier, the restaurant's manager or admin. */
+  /** Detail + last known position: the customer, the assigned courier or the restaurant's manager. */
   async getById(actor: Actor, deliveryId: string) {
     const delivery = await this.getOrThrow(deliveryId);
     if (!this.isAllowedToWatch(actor, delivery)) {
@@ -576,8 +575,8 @@ export class DeliveryService {
   }
 
   private isAllowedToWatch(actor: Actor, delivery: Delivery): boolean {
+    // Never head office: a delivery holds the customer's address and position.
     return (
-      actor.roles.includes(ROLE_ADMIN) ||
       delivery.customerId === actor.userId ||
       (delivery.livreurId !== null && delivery.livreurId === actor.userId) ||
       (actor.roles.includes(ROLE_MANAGER) && actor.tenantId === delivery.restaurantId)
