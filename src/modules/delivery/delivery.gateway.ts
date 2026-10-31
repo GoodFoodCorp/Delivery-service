@@ -3,13 +3,15 @@ import {
   ConnectedSocket,
   MessageBody,
   OnGatewayConnection,
+  OnGatewayInit,
   SubscribeMessage,
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import { Server, Socket } from 'socket.io';
+import { Namespace, Socket } from 'socket.io';
 import { Actor, verifyToken } from '../../common/auth.util';
 import { DomainError } from '../../common/errors';
+import { isAllowedOrigin } from '../../common/origins';
 import { AvailableDeliveryView, DeliveryService } from './delivery.service';
 import { SubscribeDto } from './dto/subscribe.dto';
 import { UpdatePositionDto } from './dto/update-position.dto';
@@ -37,36 +39,62 @@ interface AuthedSocket extends Socket {
  *  - everyone receives `notification` (order news) in their own room; a
  *    manager also gets their restaurant's.
  */
-@WebSocketGateway({ namespace: 'tracking', cors: { origin: true, credentials: true } })
+@WebSocketGateway({
+  namespace: 'tracking',
+  // Long-polling fallback: only pages of this site (or ALLOWED_ORIGINS) get CORS.
+  cors: {
+    origin: (origin: string | undefined, cb: (err: Error | null, ok?: boolean) => void) =>
+      cb(null, isAllowedOrigin(origin, undefined)),
+    credentials: true,
+  },
+})
 @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
-export class DeliveryGateway implements OnGatewayConnection {
+export class DeliveryGateway implements OnGatewayInit, OnGatewayConnection {
   private readonly logger = new Logger(DeliveryGateway.name);
 
   @WebSocketServer()
-  server: Server;
+  server: Namespace;
 
   constructor(private readonly deliveries: DeliveryService) {}
 
+  /**
+   * The handshake is checked before the connection exists: a page of
+   * another site (cross-site WebSocket hijacking) or a missing, forged or
+   * expired token never gets a socket.
+   */
+  afterInit(server: Namespace): void {
+    server.use((socket: AuthedSocket, next) => {
+      const { headers } = socket.handshake;
+      if (!isAllowedOrigin(headers.origin, headers['x-forwarded-host']?.toString() ?? headers.host)) {
+        next(new Error('origin not allowed'));
+        return;
+      }
+      // The web app's session is an HttpOnly cookie: the browser sends it
+      // with the handshake, scripts never see it.
+      const token =
+        (socket.handshake.auth?.token as string | undefined) ??
+        headers.authorization?.replace(/^Bearer /, '') ??
+        cookieValue(headers.cookie, 'auth_token');
+      try {
+        socket.data.actor = verifyToken(token ?? '');
+        next();
+      } catch {
+        next(new Error('unauthorized'));
+      }
+    });
+  }
+
   handleConnection(client: AuthedSocket): void {
-    // The web app's session is an HttpOnly cookie: the browser sends it with
-    // the handshake, scripts never see it.
-    const token =
-      (client.handshake.auth?.token as string | undefined) ??
-      client.handshake.headers.authorization?.replace(/^Bearer /, '') ??
-      cookieValue(client.handshake.headers.cookie, 'auth_token');
-    try {
-      const actor = verifyToken(token ?? '');
-      client.data.actor = actor;
-      const rooms = [this.userRoom(actor.userId)];
-      if (actor.roles.includes('livreur')) rooms.push(COURIERS_ROOM, this.courierRoom(actor.userId));
-      if (actor.roles.includes('manager') && actor.tenantId) rooms.push(this.restaurantRoom(actor.tenantId));
-      void client.join(rooms);
-    } catch {
-      client.emit('error', { error: 'unauthorized' });
+    const actor = client.data.actor;
+    if (!actor) {
       client.disconnect(true);
       return;
     }
-    this.logger.log(`ws connected: ${client.data.actor.userId}`);
+    const rooms = [this.userRoom(actor.userId)];
+    if (actor.roles.includes('livreur')) rooms.push(COURIERS_ROOM, this.courierRoom(actor.userId));
+    if (actor.roles.includes('manager') && actor.tenantId) rooms.push(this.restaurantRoom(actor.tenantId));
+    void client.join(rooms);
+    this.logger.log(`ws connected: ${actor.userId}`);
   }
 
   /** Pushes a newly available delivery to connected couriers, without customer data. */

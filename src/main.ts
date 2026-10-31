@@ -6,6 +6,7 @@ import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { RedisIoAdapter } from './core/realtime/redis-io.adapter';
 import { assertEncryptionConfigured } from './common/secret-box';
+import { allowedOrigins } from './common/origins';
 
 async function bootstrap(): Promise<void> {
   assertEncryptionConfigured();
@@ -14,7 +15,9 @@ async function bootstrap(): Promise<void> {
 
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   app.useGlobalFilters(new GlobalExceptionFilter());
-  app.enableCors({ origin: true, credentials: true });
+  // The web app calls through the gateway on its own origin: only the
+  // origins configured on purpose get CORS with credentials.
+  app.enableCors({ origin: allowedOrigins(), credentials: true });
 
   // Several replicas share Socket.IO rooms through Redis; one replica alone
   // works without it (development).
