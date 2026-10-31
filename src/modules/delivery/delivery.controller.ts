@@ -104,13 +104,9 @@ export class DeliveryController {
 
   @Post(':id/rating')
   @Roles('user')
-  @ApiOperation({ summary: 'The customer rates a delivered delivery {rating: 1-5, comment}' })
-  rate(
-    @CurrentActor() actor: Actor,
-    @Param('id') id: string,
-    @Body() body: { rating: number; comment?: string },
-  ) {
-    return this.deliveries.rate(actor, id, Number(body?.rating), body?.comment ?? '');
+  @ApiOperation({ summary: 'The customer rates a delivered delivery {rating: 1-5}, stars only' })
+  rate(@CurrentActor() actor: Actor, @Param('id') id: string, @Body() body: { rating: number }) {
+    return this.deliveries.rate(actor, id, Number(body?.rating));
   }
 
   @Get(':id/route')

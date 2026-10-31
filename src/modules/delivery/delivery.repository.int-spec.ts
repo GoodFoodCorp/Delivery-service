@@ -100,9 +100,9 @@ describeIfMongo('MongooseDeliveryRepository (MongoDB)', () => {
     expect((await repo.findById(String(d._id)))?.handoverCode).toBeUndefined();
     expect(await repo.handoverCodeOf(String(d._id))).toBe('0420');
 
-    expect(await repo.rate(String(d._id), 'someone-else', 5, '', new Date())).toBeNull();
-    expect((await repo.rate(String(d._id), 'c1', 4, 'ok', new Date()))?.rating).toBe(4);
-    expect(await repo.rate(String(d._id), 'c1', 1, '', new Date())).toBeNull();
+    expect(await repo.rate(String(d._id), 'someone-else', 5, new Date())).toBeNull();
+    expect((await repo.rate(String(d._id), 'c1', 4, new Date()))?.rating).toBe(4);
+    expect(await repo.rate(String(d._id), 'c1', 1, new Date())).toBeNull();
     expect(await repo.ratingOf('liv-rate')).toEqual({ average: 4, count: 1 });
   });
 });
