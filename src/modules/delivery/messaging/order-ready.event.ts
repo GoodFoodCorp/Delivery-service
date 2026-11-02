@@ -2,16 +2,19 @@ import { ReadyOrder } from '../orders.client';
 
 export const ORDER_EVENTS_EXCHANGE = 'goodfood.events';
 export const ORDER_READY_ROUTING_KEY = 'order.ready_for_pickup';
+/** The kitchen started: the delivery opens now, so a courier can come while it cooks. */
+export const ORDER_PREPARING_ROUTING_KEY = 'order.in_preparation';
 export const ORDER_CANCELLED_ROUTING_KEY = 'order.cancelled';
 /** Keeps its historical name: it now receives every order event this service reacts to. */
 export const ORDER_READY_QUEUE = 'delivery.order-ready';
 export const ORDER_READY_DLQ = 'delivery.order-ready.dlq';
-export const ORDER_ROUTING_KEYS = [ORDER_READY_ROUTING_KEY, ORDER_CANCELLED_ROUTING_KEY];
+export const ORDER_ROUTING_KEYS = [ORDER_PREPARING_ROUTING_KEY, ORDER_READY_ROUTING_KEY, ORDER_CANCELLED_ROUTING_KEY];
 
 const REQUIRED_FIELDS = ['orderId', 'customerId', 'restaurantId'] as const;
 
+/** In preparation or ready: either opens the delivery (once, see registerReadyOrder). */
 export type OrderEvent =
-  | { type: typeof ORDER_READY_ROUTING_KEY; order: ReadyOrder }
+  | { type: typeof ORDER_READY_ROUTING_KEY | typeof ORDER_PREPARING_ROUTING_KEY; order: ReadyOrder }
   | { type: typeof ORDER_CANCELLED_ROUTING_KEY; orderId: string };
 
 function optionalNumber(value: unknown): number | null {
@@ -28,7 +31,7 @@ export function parseOrderEvent(raw: Buffer): OrderEvent {
   if (message.type === ORDER_CANCELLED_ROUTING_KEY) {
     return { type: ORDER_CANCELLED_ROUTING_KEY, orderId: data.orderId };
   }
-  if (message.type !== ORDER_READY_ROUTING_KEY) {
+  if (message.type !== ORDER_READY_ROUTING_KEY && message.type !== ORDER_PREPARING_ROUTING_KEY) {
     throw new Error(`unexpected event type: ${String(message?.type)}`);
   }
   for (const field of REQUIRED_FIELDS) {
@@ -41,7 +44,7 @@ export function parseOrderEvent(raw: Buffer): OrderEvent {
     throw new Error('missing field: deliveryAddress');
   }
   return {
-    type: ORDER_READY_ROUTING_KEY,
+    type: message.type,
     order: {
       id: data.orderId,
       customer_id: data.customerId as string,
