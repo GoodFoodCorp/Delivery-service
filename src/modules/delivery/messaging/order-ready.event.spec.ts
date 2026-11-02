@@ -37,6 +37,11 @@ describe('parseOrderEvent', () => {
     expect(parseOrderReadyEvent(buf(legacy))).toMatchObject({ fulfillment: 'DELIVERY', dropoff_lat: null, tip_cents: 0 });
   });
 
+  it('opens the delivery as soon as the kitchen starts', () => {
+    const preparing = { ...valid, type: 'order.in_preparation' };
+    expect(parseOrderEvent(buf(preparing))).toMatchObject({ type: 'order.in_preparation', order: { id: 'o-1', tip_cents: 200 } });
+  });
+
   it('maps a cancellation', () => {
     expect(parseOrderEvent(buf({ type: 'order.cancelled', data: { orderId: 'o-1' } }))).toEqual({
       type: 'order.cancelled',
