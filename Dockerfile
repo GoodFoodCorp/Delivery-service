@@ -15,7 +15,9 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+# npm is only needed to install: the running service has no use for it
+# (nor for its bundled dependencies, a recurring source of CVEs).
+RUN npm ci --omit=dev && npm cache clean --force \n    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 COPY --from=builder /app/dist ./dist
 
